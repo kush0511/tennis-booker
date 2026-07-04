@@ -1,0 +1,15 @@
+.build/
+.venv/
+.swiftpm/
+*.xcodeproj/
+.DS_Store
+__pycache__/
+*.py[cod]
+*.har
+*.log
+.env
+.env.*
+*.pem
+*.key
+config.json
+schedules.json

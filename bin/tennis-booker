@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+APP="${TENNIS_BOOKER_APP:-$HOME/.local/share/tennis-booker/tennis_booker.py}"
+PYTHON="${TENNIS_BOOKER_PYTHON:-$HOME/.local/share/tennis-booker/.venv/bin/python}"
+
+if [ ! -x "$PYTHON" ]; then
+  PYTHON=/usr/bin/python3
+fi
+
+exec "$PYTHON" "$APP" "$@"
