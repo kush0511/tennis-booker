@@ -27,7 +27,7 @@ export async function GET() {
         Boolean(runtime.AUTOMATION_SECRET) &&
         runtime.AUTOMATION_TRIGGER_ENABLED === "true" &&
         externalWakeCoversRelease(settings.releaseHour, settings.releaseMinute),
-      wakeWindow: "Every minute, 11:30 AM–12:05 PM SGT",
+      wakeWindow: "Every minute, all day, Asia/Singapore",
       lastSeenAt: heartbeat?.lastSeenAt ?? null,
       scheduledAt: heartbeat?.scheduledAt ?? null,
       heartbeatAgeSeconds,

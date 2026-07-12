@@ -877,9 +877,9 @@ export function TennisDashboard({
             <div className="trigger-card is-active">
               <strong>Google Cloud wake window active</strong>
               <p>
-                Court Signal checks for armed releases every minute from 11:30 AM
-                through 12:05 PM Singapore time. The D1 lease prevents duplicate
-                execution when wake-up calls overlap.
+                Court Signal checks for armed releases every minute, all day,
+                in Singapore time. The D1 lease prevents duplicate execution
+                when wake-up calls overlap.
               </p>
             </div>
           ) : (
@@ -977,7 +977,7 @@ export function TennisDashboard({
               value={systemHealth?.automationEnabled ?? automationReady}
               detail={
                 systemHealth?.automationEnabled ?? automationReady
-                  ? systemHealth?.wakeWindow || "Every minute, 11:30 AM–12:05 PM SGT"
+                  ? systemHealth?.wakeWindow || "Every minute, all day, Asia/Singapore"
                   : "No external scheduler is currently connected."
               }
             />

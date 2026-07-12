@@ -57,11 +57,9 @@ artifact without installing its Cron Trigger. The protected
 Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
 connected.
 
-The production Site uses two Google Cloud Scheduler HTTP jobs in
-`asia-southeast1`, evaluated in `Asia/Singapore`: `30-59 11 * * *` and
-`0-5 12 * * *`. They call the signed runner every minute from 11:30 through
-12:05 with a ten-minute attempt deadline. The Sites bypass and automation
-credentials are sent only as protected request headers; the Dooremi token never
-leaves Sites. Court Signal only reports unattended automation as ready when the
-configured release time falls inside that wake window; releases outside it use
-the manual four-minute arming flow until external coverage is expanded.
+The production Site uses one enabled Google Cloud Scheduler HTTP job in
+`asia-southeast1`, evaluated in `Asia/Singapore`: `* * * * *`. It calls the
+signed runner every minute, all day, with a ten-minute attempt deadline. The
+Sites bypass and automation credentials are sent only as protected request
+headers; the Dooremi token never leaves Sites. Court Signal can therefore run
+armed plans for any configured release time without a Mac staying awake.
