@@ -191,14 +191,12 @@ added as hosted Sites secrets; never commit them or store them in D1.
 ### Hosted scheduling boundary
 
 Court Signal includes the complete server-side runner and a signed
-`POST /api/automation/run-due` boundary. Its Worker also exports a scheduled
-handler. ChatGPT Sites currently provisions fetch hosting plus D1/R2 and runtime
-values, but its project manifest does not expose Cron Trigger configuration.
-Until that platform capability is available or an approved external trigger is
-connected, unattended release-time execution is not proven on Sites. Immediate
-booking, live availability, history, cancellation, schedule persistence, safe
-claiming, and manual in-window execution are implemented; the macOS runner
-remains the reliable unattended option.
+`POST /api/automation/run-due` boundary. Its packaged Worker registers a
+once-per-minute Cron Trigger, writes a non-secret D1 heartbeat, and claims due
+plans with a lease so overlapping invocations cannot execute the same release
+twice. Immediate booking, live availability, history, cancellation, schedule
+persistence, manual in-window execution, and unattended hosted execution share
+the same transaction rules; the macOS runner remains an independent fallback.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

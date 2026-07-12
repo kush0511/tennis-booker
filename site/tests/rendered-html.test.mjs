@@ -68,3 +68,19 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.match(dashboard, /useState<number \| null>\(null\)/);
   assert.doesNotMatch(dashboard, /useState\(\(\) => Date\.now\(\)\)/);
 });
+
+test("packages the unattended runner and protected heartbeat status", async () => {
+  const [wranglerConfig, worker, statusRoute] = await Promise.all([
+    readFile(new URL("../dist/server/wrangler.json", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/automation/status/route.ts", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const config = JSON.parse(wranglerConfig);
+  assert.deepEqual(config.triggers?.crons, ["* * * * *"]);
+  assert.match(worker, /async scheduled\(/);
+  assert.match(worker, /recordAutomationHeartbeat/);
+  assert.match(statusRoute, /Automation authorization failed/);
+});

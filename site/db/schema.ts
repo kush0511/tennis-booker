@@ -103,3 +103,10 @@ export const scheduleEvents = sqliteTable(
     ),
   ],
 );
+
+export const automationHeartbeat = sqliteTable("automation_heartbeat", {
+  id: text("id").primaryKey(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  scheduledAt: text("scheduled_at").notNull(),
+  cron: text("cron").notNull(),
+});

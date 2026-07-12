@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { AUTOMATION_HEARTBEAT_ID } from "../lib/automation";
 
 interface Env {
   ASSETS: Fetcher;
@@ -52,11 +53,12 @@ const worker = {
   },
 
   async scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
     if (!env.AUTOMATION_SECRET) return;
+    const heartbeat = recordAutomationHeartbeat(controller, env);
     const request = new Request(
       "https://court-signal.internal/api/automation/run-due",
       {
@@ -64,9 +66,44 @@ const worker = {
         headers: { Authorization: `Bearer ${env.AUTOMATION_SECRET}` },
       },
     );
-    ctx.waitUntil(worker.fetch(request, env, ctx));
+    const runDue = worker.fetch(request, env, ctx).then(async (response) => {
+      await response.arrayBuffer();
+      if (!response.ok) {
+        throw new Error(`Hosted automation failed (${response.status}).`);
+      }
+    });
+    ctx.waitUntil(Promise.all([heartbeat, runDue]).then(() => undefined));
   },
 };
+
+async function recordAutomationHeartbeat(
+  controller: ScheduledController,
+  env: Env,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const scheduledAt = new Date(controller.scheduledTime).toISOString();
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS automation_heartbeat (
+      id TEXT PRIMARY KEY,
+      last_seen_at TEXT NOT NULL,
+      scheduled_at TEXT NOT NULL,
+      cron TEXT NOT NULL
+    )`),
+    env.DB.prepare(`INSERT INTO automation_heartbeat (
+      id, last_seen_at, scheduled_at, cron
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      last_seen_at = excluded.last_seen_at,
+      scheduled_at = excluded.scheduled_at,
+      cron = excluded.cron`)
+      .bind(
+        AUTOMATION_HEARTBEAT_ID,
+        now,
+        scheduledAt,
+        controller.cron,
+      ),
+  ]);
+}
 
 function withSecurityHeaders(response: Response): Response {
   const secured = new Response(response.body, response);
