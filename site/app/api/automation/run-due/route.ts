@@ -1,5 +1,10 @@
 import { getRuntimeEnv } from "@/db";
-import { claimSchedule, getSettings, listDueSchedules } from "@/db/repository";
+import {
+  claimSchedule,
+  getSettings,
+  listDueSchedules,
+  recordAutomationHeartbeat,
+} from "@/db/repository";
 import { data, HttpError, routeError } from "@/app/_server/api";
 import { domainConfig, executeStoredSchedule } from "@/app/_server/execution";
 
@@ -16,6 +21,15 @@ export async function POST(request: Request) {
     }
 
     const now = new Date().toISOString();
+    const scheduledHeader = request.headers.get("x-cloudscheduler-scheduletime");
+    const scheduledAt = scheduledHeader && !Number.isNaN(Date.parse(scheduledHeader))
+      ? new Date(scheduledHeader).toISOString()
+      : now;
+    await recordAutomationHeartbeat({
+      lastSeenAt: now,
+      scheduledAt,
+      cron: "Google Cloud Scheduler",
+    });
     const due = await listDueSchedules(now, 240);
     const results = [];
     for (const schedule of due) {

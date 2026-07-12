@@ -34,6 +34,19 @@ export type StoredSchedule = {
   updatedAt: string;
 };
 
+export type ScheduleEvent = {
+  id: number;
+  level: "info" | "warning" | "error";
+  message: string;
+  createdAt: string;
+};
+
+export type AutomationHeartbeat = {
+  lastSeenAt: string;
+  scheduledAt: string;
+  cron: string;
+};
+
 type ScheduleRow = {
   id: string;
   user_email: string;
@@ -145,6 +158,12 @@ export function ensureSchema(): Promise<void> {
       )`),
       db.prepare(`CREATE INDEX IF NOT EXISTS schedule_events_schedule_idx
         ON schedule_events (schedule_id, created_at DESC)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS automation_heartbeat (
+        id TEXT PRIMARY KEY,
+        last_seen_at TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        cron TEXT NOT NULL
+      )`),
     ])
     .then(() => undefined)
     .catch((error) => {
@@ -443,6 +462,74 @@ export async function appendScheduleEvent(
       new Date().toISOString(),
     )
     .run();
+}
+
+export async function listScheduleEvents(
+  scheduleId: string,
+  userEmail: string,
+  limit = 40,
+): Promise<ScheduleEvent[]> {
+  await ensureSchema();
+  const result = await database()
+    .prepare(`SELECT id, level, message, created_at
+      FROM schedule_events
+      WHERE schedule_id = ? AND user_email = ?
+      ORDER BY created_at DESC
+      LIMIT ?`)
+    .bind(scheduleId, userEmail, limit)
+    .all<{
+      id: number;
+      level: "info" | "warning" | "error";
+      message: string;
+      created_at: string;
+    }>();
+  return result.results.map((event) => ({
+    id: event.id,
+    level: event.level,
+    message: event.message,
+    createdAt: event.created_at,
+  }));
+}
+
+export async function recordAutomationHeartbeat(
+  heartbeat: AutomationHeartbeat,
+): Promise<void> {
+  await ensureSchema();
+  await database()
+    .prepare(`INSERT INTO automation_heartbeat (
+      id, last_seen_at, scheduled_at, cron
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      last_seen_at = excluded.last_seen_at,
+      scheduled_at = excluded.scheduled_at,
+      cron = excluded.cron`)
+    .bind(
+      "runner",
+      heartbeat.lastSeenAt,
+      heartbeat.scheduledAt,
+      heartbeat.cron,
+    )
+    .run();
+}
+
+export async function getAutomationHeartbeat(): Promise<AutomationHeartbeat | null> {
+  await ensureSchema();
+  const heartbeat = await database()
+    .prepare(`SELECT last_seen_at, scheduled_at, cron
+      FROM automation_heartbeat WHERE id = ?`)
+    .bind("runner")
+    .first<{
+      last_seen_at: string;
+      scheduled_at: string;
+      cron: string;
+    }>();
+  return heartbeat
+    ? {
+        lastSeenAt: heartbeat.last_seen_at,
+        scheduledAt: heartbeat.scheduled_at,
+        cron: heartbeat.cron,
+      }
+    : null;
 }
 
 function fromScheduleRow(row: ScheduleRow): StoredSchedule {

@@ -31,4 +31,11 @@ declare module "@/db/repository" {
     createdAt: string;
     updatedAt: string;
   };
+
+  export type ScheduleEvent = {
+    id: number;
+    level: "info" | "warning" | "error";
+    message: string;
+    createdAt: string;
+  };
 }

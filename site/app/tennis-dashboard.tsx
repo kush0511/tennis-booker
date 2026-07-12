@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { StoredSchedule, UserSettings } from "@/db/repository";
+import type {
+  ScheduleEvent,
+  StoredSchedule,
+  UserSettings,
+} from "@/db/repository";
 
 type AvailabilitySlot = {
   id: number | string | null;
@@ -40,7 +44,30 @@ type DashboardProps = {
   automationReady: boolean;
 };
 
-type Tab = "book" | "plans" | "history";
+type Tab = "book" | "plans" | "history" | "system";
+
+type SystemHealth = {
+  checkedAt: string;
+  dooremiConfigured: boolean;
+  automationEnabled: boolean;
+  wakeWindow: string;
+  lastSeenAt: string | null;
+  scheduledAt: string | null;
+  releaseTiming: {
+    leadDays: number;
+    hour: number;
+    minute: number;
+    preparationSeconds: number;
+    fireDelayMilliseconds: number;
+  };
+};
+
+type PendingAction =
+  | { kind: "book"; eventDay: string; eventTimes: string[] }
+  | { kind: "schedule"; eventDay: string; eventTimes: string[] }
+  | { kind: "run"; schedule: StoredSchedule }
+  | { kind: "cancel-plan"; schedule: StoredSchedule }
+  | { kind: "cancel-booking"; booking: BookingRecord };
 
 export function TennisDashboard({
   user,
@@ -54,7 +81,6 @@ export function TennisDashboard({
   const [schedules, setSchedules] = useState(initialSchedules);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [selectedDay, setSelectedDay] = useState("");
-  const [dayAnchor, setDayAnchor] = useState<number | null>(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [selectedTimes, setSelectedTimes] = useState<string[]>([]);
   const [loadingAvailability, setLoadingAvailability] = useState(false);
@@ -64,15 +90,22 @@ export function TennisDashboard({
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState<number | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [selectedSchedule, setSelectedSchedule] = useState<StoredSchedule | null>(null);
+  const [scheduleEvents, setScheduleEvents] = useState<ScheduleEvent[]>([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [loadingSystem, setLoadingSystem] = useState(false);
+  const [checkingConnection, setCheckingConnection] = useState(false);
 
   const dates = useMemo(
     () =>
-      dayAnchor === null
+      !selectedDay
         ? []
         : Array.from({ length: 7 }, (_, index) =>
-            suggestedSessionDay(settings.bookingLeadDays, index, dayAnchor),
+            shiftSessionDay(selectedDay, index - 2),
           ),
-    [dayAnchor, settings.bookingLeadDays],
+    [selectedDay],
   );
   const release = useMemo(
     () => (selectedDay ? releaseFor(selectedDay, settings) : null),
@@ -86,13 +119,16 @@ export function TennisDashboard({
   const recentPlans = schedules
     .filter((item) => !["pending", "running"].includes(item.status))
     .slice(0, 6);
+  const maximumSelectable = Math.min(
+    settings.maximumSessions,
+    availability?.maximumSelectableSlots || settings.maximumSessions,
+  );
 
   useEffect(() => {
     let clockTimer: number | null = null;
     const startupTimer = window.setTimeout(() => {
       const current = Date.now();
       setNow(current);
-      setDayAnchor(current);
       setSelectedDay((day) =>
         day || suggestedSessionDay(initialSettings.bookingLeadDays, 0, current),
       );
@@ -147,6 +183,25 @@ export function TennisDashboard({
     }
   }, [tokenConfigured]);
 
+  const loadSchedules = useCallback(async () => {
+    try {
+      setSchedules(await api<StoredSchedule[]>("/api/schedules"));
+    } catch (caught) {
+      setError(messageOf(caught));
+    }
+  }, []);
+
+  const loadSystemHealth = useCallback(async () => {
+    setLoadingSystem(true);
+    try {
+      setSystemHealth(await api<SystemHealth>("/api/system/health"));
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setLoadingSystem(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadAvailability(), 0);
     return () => window.clearTimeout(timer);
@@ -156,6 +211,18 @@ export function TennisDashboard({
     const timer = window.setTimeout(() => void loadBookings(), 0);
     return () => window.clearTimeout(timer);
   }, [loadBookings]);
+
+  useEffect(() => {
+    if (tab !== "plans") return;
+    const timer = window.setTimeout(() => void loadSchedules(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSchedules, tab]);
+
+  useEffect(() => {
+    if (tab !== "system") return;
+    const timer = window.setTimeout(() => void loadSystemHealth(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSystemHealth, tab]);
 
   function changeDay(day: string) {
     setSelectedDay(day);
@@ -170,8 +237,8 @@ export function TennisDashboard({
       if (current.includes(slot.eventTime)) {
         return current.filter((value) => value !== slot.eventTime);
       }
-      if (current.length >= settings.maximumSessions) {
-        setError(`Choose at most ${settings.maximumSessions} sessions.`);
+      if (current.length >= maximumSelectable) {
+        setError(`Choose at most ${maximumSelectable} sessions.`);
         return current;
       }
       setError(null);
@@ -179,43 +246,54 @@ export function TennisDashboard({
     });
   }
 
-  async function submitSelection() {
+  function submitSelection() {
     if (!selectedTimes.length) return;
+    setPendingAction({
+      kind: releaseOpen ? "book" : "schedule",
+      eventDay: selectedDay,
+      eventTimes: selectedTimes,
+    });
+  }
+
+  async function bookSelection(eventDay: string, eventTimes: string[]) {
     setSubmitting(true);
     setError(null);
     setNotice(null);
     try {
-      if (releaseOpen) {
-        const result = await api<{
-          status: string;
-          message: string;
-          bookingOrderIds: number[];
-        }>("/api/bookings/execute", {
-          method: "POST",
-          body: JSON.stringify({
-            eventDay: selectedDay,
-            eventTimes: selectedTimes,
-          }),
-        });
-        setNotice(result.message);
-        setSelectedTimes([]);
-        await Promise.all([loadAvailability(), loadBookings()]);
-      } else {
-        const schedule = await api<StoredSchedule>("/api/schedules", {
-          method: "POST",
-          body: JSON.stringify({
-            eventDay: selectedDay,
-            eventTimes: selectedTimes,
-          }),
-        });
-        setSchedules((current) => [schedule, ...current]);
-        setNotice(
-          automationReady
-            ? `${selectedTimes.length} session${selectedTimes.length === 1 ? "" : "s"} armed for ${formatRelease(schedule.releaseAt)}.`
-            : `Release plan saved for ${formatRelease(schedule.releaseAt)}. Open it inside the four-minute arming window to run it, or use the TUI for unattended execution.`,
-        );
-        setSelectedTimes([]);
-      }
+      const result = await api<{
+        status: string;
+        message: string;
+        bookingOrderIds: number[];
+      }>("/api/bookings/execute", {
+        method: "POST",
+        body: JSON.stringify({ eventDay, eventTimes }),
+      });
+      setNotice(result.message);
+      setSelectedTimes([]);
+      await Promise.all([loadAvailability(), loadBookings(), loadSchedules()]);
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function scheduleSelection(eventDay: string, eventTimes: string[]) {
+    setSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const schedule = await api<StoredSchedule>("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify({ eventDay, eventTimes }),
+      });
+      setSchedules((current) => [schedule, ...current]);
+      setNotice(
+        automationReady
+          ? `${eventTimes.length} session${eventTimes.length === 1 ? "" : "s"} armed for ${formatRelease(schedule.releaseAt)}.`
+          : `Release plan saved for ${formatRelease(schedule.releaseAt)}. Open it inside the four-minute arming window to run it.`,
+      );
+      setSelectedTimes([]);
     } catch (caught) {
       setError(messageOf(caught));
     } finally {
@@ -263,7 +341,7 @@ export function TennisDashboard({
         ),
       );
       setNotice(result.message);
-      await Promise.all([loadAvailability(), loadBookings()]);
+      await Promise.all([loadAvailability(), loadBookings(), loadSchedules()]);
     } catch (caught) {
       setError(messageOf(caught));
     } finally {
@@ -288,6 +366,60 @@ export function TennisDashboard({
     }
   }
 
+  async function openSchedule(schedule: StoredSchedule) {
+    setSelectedSchedule(schedule);
+    setLoadingEvents(true);
+    try {
+      setScheduleEvents(
+        await api<ScheduleEvent[]>(
+          `/api/schedules/${encodeURIComponent(schedule.id)}/events`,
+        ),
+      );
+    } catch (caught) {
+      setScheduleEvents([]);
+      setError(messageOf(caught));
+    } finally {
+      setLoadingEvents(false);
+    }
+  }
+
+  async function checkConnection() {
+    setCheckingConnection(true);
+    setError(null);
+    try {
+      const result = await api<{ elapsedMs: number }>("/api/system/check", {
+        method: "POST",
+      });
+      setNotice(`Dooremi responded in ${result.elapsedMs} ms. No booking was changed.`);
+      await loadSystemHealth();
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setCheckingConnection(false);
+    }
+  }
+
+  async function confirmPendingAction() {
+    if (!pendingAction) return;
+    const action = pendingAction;
+    try {
+      if (action.kind === "book") {
+        await bookSelection(action.eventDay, action.eventTimes);
+      } else if (action.kind === "schedule") {
+        await scheduleSelection(action.eventDay, action.eventTimes);
+      } else if (action.kind === "run") {
+        await runPlan(action.schedule);
+      } else if (action.kind === "cancel-plan") {
+        await cancelPlan(action.schedule);
+      } else {
+        await cancelRemoteBooking(action.booking);
+      }
+      setPendingAction(null);
+    } catch {
+      // Each action reports its own safe error and resets its loading state.
+    }
+  }
+
   async function persistSettings(next: UserSettings) {
     setSubmitting(true);
     setError(null);
@@ -298,7 +430,6 @@ export function TennisDashboard({
       });
       setSettings(saved);
       const current = Date.now();
-      setDayAnchor(current);
       setSelectedDay(suggestedSessionDay(saved.bookingLeadDays, 0, current));
       setSettingsOpen(false);
       setSelectedTimes([]);
@@ -323,6 +454,13 @@ export function TennisDashboard({
           COURT<span>/</span>SIGNAL
         </button>
         <div className="topbar-actions">
+          <button
+            className={`topbar-system-button ${tab === "system" ? "is-active" : ""}`}
+            type="button"
+            onClick={() => setTab("system")}
+          >
+            System
+          </button>
           <span className={`connection-pill ${tokenConfigured ? "is-live" : ""}`}>
             <span /> {tokenConfigured ? "Dooremi live" : "Setup needed"}
           </span>
@@ -337,7 +475,7 @@ export function TennisDashboard({
         </div>
       </header>
 
-      <div className="desktop-grid">
+      <div className={`desktop-grid view-${tab}`}>
         <section
           className={`booking-column ${tab === "book" ? "mobile-active" : ""}`}
           aria-labelledby="booking-heading"
@@ -414,6 +552,36 @@ export function TennisDashboard({
               </div>
               <span>Singapore time</span>
             </div>
+            <div className="date-control-row">
+              <button
+                className="date-step-button"
+                type="button"
+                onClick={() => changeDay(shiftSessionDay(selectedDay, -1))}
+                disabled={!selectedDay}
+                aria-label="Previous court day"
+              >
+                ←
+              </button>
+              <label className="date-input">
+                <span>Jump to day</span>
+                <input
+                  type="date"
+                  value={selectedDay}
+                  onChange={(event) => {
+                    if (event.target.value) changeDay(event.target.value);
+                  }}
+                />
+              </label>
+              <button
+                className="date-step-button"
+                type="button"
+                onClick={() => changeDay(shiftSessionDay(selectedDay, 1))}
+                disabled={!selectedDay}
+                aria-label="Next court day"
+              >
+                →
+              </button>
+            </div>
             <div className="date-rail" role="list" aria-label="Session dates">
               {dates.map((day) => {
                 const parts = dateParts(day);
@@ -456,7 +624,7 @@ export function TennisDashboard({
                 <strong>{availability?.facilityName || "Tennis court"}</strong>
                 <span>
                   {availability
-                    ? `${availability.slots.filter((slot) => slot.available).length} sessions available`
+                    ? `${availability.slots.filter((slot) => slot.available).length} sessions available · select up to ${maximumSelectable}`
                     : "Live availability appears here"}
                 </span>
               </div>
@@ -508,7 +676,7 @@ export function TennisDashboard({
             <button
               className="primary-button"
               type="button"
-              onClick={() => void submitSelection()}
+              onClick={submitSelection}
               disabled={!selectedTimes.length || submitting || !tokenConfigured}
             >
               {submitting
@@ -558,7 +726,7 @@ export function TennisDashboard({
                       <button
                         className="run-plan-button"
                         type="button"
-                        onClick={() => void runPlan(schedule)}
+                        onClick={() => setPendingAction({ kind: "run", schedule })}
                         disabled={submitting || !tokenConfigured}
                       >
                         Run this release
@@ -568,12 +736,19 @@ export function TennisDashboard({
                       <button
                         className="danger-link"
                         type="button"
-                        onClick={() => void cancelPlan(schedule)}
+                        onClick={() => setPendingAction({ kind: "cancel-plan", schedule })}
                         disabled={submitting}
                       >
                         Cancel plan
                       </button>
                     ) : null}
+                    <button
+                      className="inspect-link"
+                      type="button"
+                      onClick={() => void openSchedule(schedule)}
+                    >
+                      View run details
+                    </button>
                   </div>
                 </article>
               ))
@@ -601,7 +776,16 @@ export function TennisDashboard({
                       <span>{schedule.eventTimes.join(" · ")}</span>
                       {schedule.resultMessage ? <small>{schedule.resultMessage}</small> : null}
                     </div>
-                    <StatusPill status={schedule.status} />
+                    <div className="result-actions">
+                      <StatusPill status={schedule.status} />
+                      <button
+                        className="inspect-link"
+                        type="button"
+                        onClick={() => void openSchedule(schedule)}
+                      >
+                        Details
+                      </button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -631,9 +815,9 @@ export function TennisDashboard({
             <div className="trigger-card">
               <strong>Unattended trigger not connected</strong>
               <p>
-                Sites securely stores plans and can execute them, but its current
-                manifest cannot provision the exact-time trigger. Run a plan in
-                its four-minute window or keep using the macOS TUI for unattended releases.
+                Add a hosted scheduler credential to let Sites run plans without
+                a Mac staying awake. Manual execution remains available in the
+                four-minute arming window.
               </p>
             </div>
           )}
@@ -673,7 +857,9 @@ export function TennisDashboard({
                   <button
                     type="button"
                     className="danger-link"
-                    onClick={() => void cancelRemoteBooking(booking)}
+                    onClick={() =>
+                      setPendingAction({ kind: "cancel-booking", booking })
+                    }
                     disabled={submitting}
                   >
                     Cancel
@@ -689,6 +875,76 @@ export function TennisDashboard({
             ) : null}
           </div>
         </section>
+
+        <section
+          className={`system-column ${tab === "system" ? "mobile-active" : ""}`}
+          aria-labelledby="system-heading"
+        >
+          <div className="aside-heading">
+            <div>
+              <p className="section-kicker">Hosted operations</p>
+              <h2 id="system-heading">System check</h2>
+            </div>
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => void loadSystemHealth()}
+              disabled={loadingSystem}
+            >
+              {loadingSystem ? "Checking…" : "Refresh"}
+            </button>
+          </div>
+
+          <div className="health-stack">
+            <SystemCheckCard
+              label="Dooremi secret"
+              value={systemHealth?.dooremiConfigured ?? tokenConfigured}
+              detail="Stored only in this Site’s hosted secret vault."
+            />
+            <SystemCheckCard
+              label="External wake-up"
+              value={systemHealth?.automationEnabled ?? automationReady}
+              detail={
+                systemHealth?.automationEnabled ?? automationReady
+                  ? systemHealth?.wakeWindow || "Every minute, 11:30 AM–12:05 PM SGT"
+                  : "No external scheduler is currently connected."
+              }
+            />
+            <SystemCheckCard
+              label="Last runner heartbeat"
+              value={Boolean(systemHealth?.lastSeenAt)}
+              detail={
+                systemHealth?.lastSeenAt
+                  ? `${formatDateTime(systemHealth.lastSeenAt)} SGT`
+                  : "No external wake-up has reached the site yet."
+              }
+            />
+          </div>
+
+          <section className="system-timing-card" aria-label="Release timing">
+            <p className="section-kicker">Release timing</p>
+            <strong>
+              {String(systemHealth?.releaseTiming.hour ?? settings.releaseHour).padStart(2, "0")}:
+              {String(systemHealth?.releaseTiming.minute ?? settings.releaseMinute).padStart(2, "0")} SGT
+            </strong>
+            <p>
+              {systemHealth?.releaseTiming.leadDays ?? settings.bookingLeadDays} days before play · prepares replacements {systemHealth?.releaseTiming.preparationSeconds ?? settings.cancellationLeadSeconds}s before release · fires {systemHealth?.releaseTiming.fireDelayMilliseconds ?? settings.fireDelayMilliseconds}ms after.
+            </p>
+          </section>
+
+          <button
+            className="primary-button wide"
+            type="button"
+            disabled={!tokenConfigured || checkingConnection}
+            onClick={() => void checkConnection()}
+          >
+            {checkingConnection ? "Checking Dooremi…" : "Check Dooremi connection"}
+          </button>
+          <p className="system-footnote">
+            This is the hosted equivalent of the TUI doctor: it checks the remote
+            service without reading or exposing your token, and never changes a booking.
+          </p>
+        </section>
       </div>
 
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
@@ -700,6 +956,7 @@ export function TennisDashboard({
         <NavButton label="Book" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
         <NavButton label="Plans" active={tab === "plans"} onClick={() => setTab("plans")} symbol="◷" count={activePlans.length} />
         <NavButton label="Bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
+        <NavButton label="System" active={tab === "system"} onClick={() => setTab("system")} symbol="◎" />
       </nav>
 
       {settingsOpen ? (
@@ -711,7 +968,153 @@ export function TennisDashboard({
           onSave={persistSettings}
         />
       ) : null}
+      {pendingAction ? (
+        <ConfirmationSheet
+          action={pendingAction}
+          submitting={submitting}
+          onClose={() => setPendingAction(null)}
+          onConfirm={() => void confirmPendingAction()}
+        />
+      ) : null}
+      {selectedSchedule ? (
+        <ScheduleDetailsSheet
+          schedule={selectedSchedule}
+          events={scheduleEvents}
+          loading={loadingEvents}
+          onClose={() => setSelectedSchedule(null)}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function ConfirmationSheet({
+  action,
+  submitting,
+  onClose,
+  onConfirm,
+}: {
+  action: PendingAction;
+  submitting: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const content = confirmationCopy(action);
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="confirmation-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-heading"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="sheet-handle" aria-hidden="true" />
+        <p className="section-kicker">Confirm action</p>
+        <h2 id="confirm-heading">{content.title}</h2>
+        <p className="confirmation-copy">{content.detail}</p>
+        {content.targets ? <div className="confirmation-targets">{content.targets}</div> : null}
+        <div className="confirmation-actions">
+          <button className="secondary-button" type="button" onClick={onClose} disabled={submitting}>
+            Keep editing
+          </button>
+          <button
+            className={content.danger ? "danger-button" : "primary-button"}
+            type="button"
+            onClick={onConfirm}
+            disabled={submitting}
+          >
+            {submitting ? "Working…" : content.confirm}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ScheduleDetailsSheet({
+  schedule,
+  events,
+  loading,
+  onClose,
+}: {
+  schedule: StoredSchedule;
+  events: ScheduleEvent[];
+  loading: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="details-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="schedule-details-heading"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="sheet-handle" aria-hidden="true" />
+        <div className="sheet-heading">
+          <div>
+            <p className="section-kicker">Release record</p>
+            <h2 id="schedule-details-heading">{formatDay(schedule.eventDay)}</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close schedule details">×</button>
+        </div>
+        <div className="detail-summary">
+          <div>
+            <span>Sessions</span>
+            <strong>{schedule.eventTimes.join(" · ")}</strong>
+          </div>
+          <StatusPill status={schedule.status} />
+        </div>
+        <dl className="execution-facts">
+          <div><dt>Released</dt><dd>{formatRelease(schedule.releaseAt)} SGT</dd></div>
+          <div><dt>Attempted</dt><dd>{schedule.attemptedAt ? `${formatDateTime(schedule.attemptedAt)} SGT` : "Not yet"}</dd></div>
+          <div><dt>Order IDs</dt><dd>{schedule.bookingOrderIds.length ? schedule.bookingOrderIds.join(", ") : "None returned"}</dd></div>
+          <div><dt>Replaced bookings</dt><dd>{schedule.cancelledBookingIds.length ? schedule.cancelledBookingIds.join(", ") : "None"}</dd></div>
+          <div><dt>Submit skew</dt><dd>{schedule.submitSkewMs === null ? "Not measured" : `${schedule.submitSkewMs} ms`}</dd></div>
+        </dl>
+        {schedule.resultMessage ? <p className="detail-result">{schedule.resultMessage}</p> : null}
+        <section className="event-log" aria-labelledby="event-log-heading">
+          <div className="recent-heading">
+            <h3 id="event-log-heading">Timing log</h3>
+            <span>{loading ? "Loading…" : `${events.length} events`}</span>
+          </div>
+          {events.length ? (
+            <ol>
+              {events.map((event) => (
+                <li key={event.id} className={`event-${event.level}`}>
+                  <span>{formatDateTime(event.createdAt)}</span>
+                  <p>{event.message}</p>
+                </li>
+              ))}
+            </ol>
+          ) : !loading ? (
+            <p className="empty-log">No stored timing events for this plan yet.</p>
+          ) : null}
+        </section>
+      </section>
+    </div>
+  );
+}
+
+function SystemCheckCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: boolean;
+  detail: string;
+}) {
+  return (
+    <article className={`system-check-card ${value ? "is-good" : "is-pending"}`}>
+      <span aria-hidden="true">{value ? "✓" : "!"}</span>
+      <div>
+        <strong>{label}</strong>
+        <p>{detail}</p>
+      </div>
+    </article>
   );
 }
 
@@ -898,6 +1301,13 @@ function suggestedSessionDay(
   return current.toISOString().slice(0, 10);
 }
 
+function shiftSessionDay(day: string, offset: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
+  const value = new Date(`${day}T12:00:00+08:00`);
+  value.setUTCDate(value.getUTCDate() + offset);
+  return value.toISOString().slice(0, 10);
+}
+
 function releaseFor(day: string, settings: UserSettings): Date {
   const session = new Date(`${day}T00:00:00+08:00`);
   session.setUTCDate(session.getUTCDate() - settings.bookingLeadDays);
@@ -961,6 +1371,67 @@ function formatRelease(value: string): string {
     hour12: false,
     timeZone: "Asia/Singapore",
   }).format(new Date(value));
+}
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat("en-SG", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Singapore",
+  }).format(new Date(value));
+}
+
+function confirmationCopy(action: PendingAction): {
+  title: string;
+  detail: string;
+  targets?: string;
+  confirm: string;
+  danger?: boolean;
+} {
+  if (action.kind === "book") {
+    return {
+      title: "Book these sessions now?",
+      detail: "Court Signal will submit one synchronized booking request now. It will not retry an ambiguous result automatically.",
+      targets: `${formatDay(action.eventDay)} · ${action.eventTimes.join(" · ")}`,
+      confirm: "Book now",
+    };
+  }
+  if (action.kind === "schedule") {
+    return {
+      title: "Arm this release plan?",
+      detail: "At release, the hosted runner checks current tennis bookings, preserves unrelated bookings, and only replaces the matching sessions in one synchronized batch.",
+      targets: `${formatDay(action.eventDay)} · ${action.eventTimes.join(" · ")}`,
+      confirm: "Arm release",
+    };
+  }
+  if (action.kind === "run") {
+    return {
+      title: "Run this release now?",
+      detail: "The hosted runner will prepare and submit this plan immediately. This is only available inside the four-minute arming window.",
+      targets: `${formatDay(action.schedule.eventDay)} · ${action.schedule.eventTimes.join(" · ")}`,
+      confirm: "Run release",
+    };
+  }
+  if (action.kind === "cancel-plan") {
+    return {
+      title: "Cancel this release plan?",
+      detail: "The plan will be removed from the hosted runner. No court booking is cancelled by this action.",
+      targets: `${formatDay(action.schedule.eventDay)} · ${action.schedule.eventTimes.join(" · ")}`,
+      confirm: "Cancel plan",
+      danger: true,
+    };
+  }
+  return {
+    title: "Cancel this booking?",
+    detail: "This sends a cancellation request directly to Dooremi. Confirmed cancellation cannot be undone here.",
+    targets: `${action.booking.facilityName} · ${action.booking.eventTime}`,
+    confirm: "Cancel booking",
+    danger: true,
+  };
 }
 
 function initials(value: string): string {
