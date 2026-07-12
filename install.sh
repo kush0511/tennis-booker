@@ -9,6 +9,10 @@ VENV_DIR="$APP_DIR/.venv"
 mkdir -p "$APP_DIR" "$BIN_DIR"
 install -m 700 "$ROOT/tennis_booker.py" "$APP_DIR/tennis_booker.py"
 install -m 700 "$ROOT/tennis_tui.py" "$APP_DIR/tennis_tui.py"
+install -d -m 700 "$APP_DIR/tennis_core"
+for MODULE in "$ROOT"/tennis_core/*.py; do
+  install -m 600 "$MODULE" "$APP_DIR/tennis_core/$(basename "$MODULE")"
+done
 install -m 600 "$ROOT/requirements.txt" "$APP_DIR/requirements.txt"
 install -m 755 "$ROOT/bin/tennis-booker" "$BIN_DIR/tennis-booker"
 

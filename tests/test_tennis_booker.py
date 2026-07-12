@@ -25,6 +25,9 @@ class DateTests(unittest.TestCase):
     def test_default_transaction_limit_is_six(self):
         self.assertEqual(tb.Config().max_sessions_per_booking, 6)
 
+    def test_default_cancellation_lead_is_fifteen_seconds(self):
+        self.assertEqual(tb.Config().cancellation_lead_seconds, 15)
+
 
 class SelectionTests(unittest.TestCase):
     def test_ranges_are_sorted_and_deduplicated(self):
@@ -357,6 +360,49 @@ class APITests(unittest.TestCase):
         self.assertFalse(client.active)
 
     @mock.patch.object(tb.time, "sleep")
+    def test_accepted_cancellation_is_polled_without_resubmission(self, sleep):
+        class FakeClient:
+            def __init__(self):
+                self.cancel_calls = []
+                self.history_calls = 0
+
+            def cancel_booking(self, booking_id, token):
+                self.cancel_calls.append(booking_id)
+                return {"message": "Cancelled", "booking_id": booking_id}
+
+            def booking_history(self, token, page_size):
+                self.history_calls += 1
+                if self.history_calls == 1:
+                    return [
+                        {
+                            "id": 100,
+                            "facility_name": "Tennis Court",
+                            "event_day": "Fri, 17/07/2026",
+                            "event_times": ["07:00-08:00"],
+                            "status_name": "Confirmed",
+                        }
+                    ]
+                return []
+
+        client = FakeClient()
+        result = tb.cancel_active_tennis_bookings(
+            [
+                {
+                    "id": 100,
+                    "facility_name": "Tennis Court",
+                    "event_day": "Fri, 17/07/2026",
+                    "event_times": ["07:00-08:00"],
+                    "status_name": "Confirmed",
+                }
+            ],
+            "token",
+            client,
+        )
+        self.assertEqual(result, [100])
+        self.assertEqual(client.cancel_calls, [100])
+        self.assertEqual(client.history_calls, 2)
+
+    @mock.patch.object(tb.time, "sleep")
     def test_immediate_rebooking_cancels_before_submitting_all_four(
         self, sleep
     ):
@@ -458,13 +504,20 @@ class APITests(unittest.TestCase):
             timeline = []
             clients = [mock.Mock() for _ in range(4)]
 
-            def cancel(bookings, token, client):
+            def cancel(bookings, token, client, timing_callback=None):
                 timeline.append("cancel")
                 return [100]
 
+            def warm(prepared_clients, token):
+                timeline.append("warm")
+                return [{"elapsed_ms": 1}] * 4
+
             def submit(prepared, token, prepared_clients):
                 timeline.append("submit")
-                self.assertEqual(timeline, ["cancel", "submit"])
+                self.assertEqual(
+                    timeline,
+                    ["warm", "cancel", "warm", "submit"],
+                )
                 targets = tb.schedule_booking_targets(prepared)
                 self.assertEqual(len(targets), 4)
                 return {
@@ -496,7 +549,7 @@ class APITests(unittest.TestCase):
             ), mock.patch.object(
                 tb,
                 "warm_booking_clients",
-                return_value=[{"elapsed_ms": 1}] * 4,
+                side_effect=warm,
             ), mock.patch.object(
                 tb,
                 "submit_booking_requests",
@@ -519,6 +572,7 @@ class APITests(unittest.TestCase):
             self.assertEqual(saved["status"], "succeeded")
             self.assertEqual(saved["cancelled_booking_ids"], [100])
             self.assertEqual(len(saved["submitted_targets"]), 4)
+            self.assertEqual(timeline, ["warm", "cancel", "warm", "submit"])
 
     def test_history_shape_and_cancel_call_match_capture(self):
         payload = {

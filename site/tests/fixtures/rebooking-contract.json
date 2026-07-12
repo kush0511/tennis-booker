@@ -1,0 +1,42 @@
+{
+  "schedule": {
+    "eventDay": "2026-07-18",
+    "eventTimes": ["19:00-20:00", "20:00-21:00"],
+    "facilityId": 9001
+  },
+  "activeBookings": [
+    {
+      "id": 501,
+      "facilityName": "Tennis Court",
+      "eventDay": "Fri, 17/07/2026",
+      "eventTime": "07:00-08:00 · 08:00-09:00",
+      "eventTimes": ["07:00-08:00", "08:00-09:00"],
+      "status": 1,
+      "statusName": "Confirmed",
+      "canCancel": true,
+      "categoryType": 7
+    }
+  ],
+  "expectedTargets": [
+    {
+      "eventDay": "2026-07-17",
+      "eventTime": "07:00-08:00",
+      "facilityId": 9001
+    },
+    {
+      "eventDay": "2026-07-17",
+      "eventTime": "08:00-09:00",
+      "facilityId": 9001
+    },
+    {
+      "eventDay": "2026-07-18",
+      "eventTime": "19:00-20:00",
+      "facilityId": 9001
+    },
+    {
+      "eventDay": "2026-07-18",
+      "eventTime": "20:00-21:00",
+      "facilityId": 9001
+    }
+  ]
+}

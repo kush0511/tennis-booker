@@ -1,0 +1,31 @@
+{
+  "status": 0,
+  "msg": "ok",
+  "content": [
+    {
+      "facility": {
+        "id": 9001,
+        "facilityName": "Tennis Court",
+        "multiSelectTime": 1,
+        "condoBookingFacilityDateBeanList": [
+          {
+            "id": 101,
+            "facilityId": 9001,
+            "startFrom": "07:00",
+            "endTo": "08:00",
+            "state": 0,
+            "bookingOrderId": null
+          },
+          {
+            "id": 102,
+            "facilityId": 9001,
+            "startFrom": "08:00",
+            "endTo": "09:00",
+            "state": 1,
+            "bookingOrderId": 80001
+          }
+        ]
+      }
+    }
+  ]
+}

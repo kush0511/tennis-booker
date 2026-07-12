@@ -1,0 +1,45 @@
+{
+  "status": 0,
+  "msg": "ok",
+  "content": [
+    {
+      "id": 501,
+      "categoryType": 7,
+      "facilityList": [
+        {
+          "id": 1501,
+          "facilityName": "Tennis Court",
+          "eventDate": "Fri, 17/07/2026",
+          "eventTime": "07:00-08:00",
+          "status": 1,
+          "statusName": "Confirmed",
+          "canCancel": true
+        },
+        {
+          "id": 1502,
+          "facilityName": "Tennis Court",
+          "eventDate": "Fri, 17/07/2026",
+          "eventTime": "08:00-09:00",
+          "status": 1,
+          "statusName": "Confirmed",
+          "canCancel": true
+        }
+      ]
+    },
+    {
+      "id": 502,
+      "categoryType": 3,
+      "facilityList": [
+        {
+          "id": 1601,
+          "facilityName": "Function Room",
+          "eventDate": "Sat, 18/07/2026",
+          "eventTime": "18:00-19:00",
+          "status": 1,
+          "statusName": "Confirmed",
+          "canCancel": false
+        }
+      ]
+    }
+  ]
+}
