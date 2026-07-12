@@ -46,8 +46,15 @@ export default async function Home() {
     );
   }
 
-  const [{ getRuntimeEnv }, { getSettings, listSchedules }] =
-    await Promise.all([import("@/db"), import("@/db/repository")]);
+  const [
+    { getRuntimeEnv },
+    { getSettings, listSchedules },
+    { externalWakeCoversRelease },
+  ] = await Promise.all([
+    import("@/db"),
+    import("@/db/repository"),
+    import("@/lib/automation"),
+  ]);
   const [settings, schedules] = await Promise.all([
     getSettings(user.email),
     listSchedules(user.email),
@@ -57,7 +64,8 @@ export default async function Home() {
   );
   const automationReady = Boolean(
     getRuntimeEnv().AUTOMATION_SECRET &&
-      getRuntimeEnv().AUTOMATION_TRIGGER_ENABLED === "true",
+      getRuntimeEnv().AUTOMATION_TRIGGER_ENABLED === "true" &&
+      externalWakeCoversRelease(settings.releaseHour, settings.releaseMinute),
   );
 
   return (

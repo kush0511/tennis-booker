@@ -146,6 +146,37 @@ test("only a cancellation that was not accepted is retried", async () => {
   assert.deepEqual(cancelCalls, [100, 101, 101]);
 });
 
+test("multiple cancellations share one timeout window instead of running serially", async () => {
+  const gates: Array<() => void> = [];
+  const started: number[] = [];
+  const active = new Set([100, 101, 102, 103]);
+  const client: BookingTransactionClient = {
+    warmup: async () => ({ elapsedMs: 1, serverDate: null }),
+    cancelBooking: (id) => {
+      started.push(id);
+      return new Promise((resolve) => {
+        gates.push(() => {
+          active.delete(id);
+          resolve({ message: "accepted", bookingId: id });
+        });
+      });
+    },
+    bookingHistory: async () =>
+      [...active].map((id) => confirmedBooking(id)),
+    createSingleBooking: async () => ({ message: "ok", bookingOrderId: 1 }),
+  };
+  const cancellation = cancelActiveTennisBookings(
+    client,
+    [...active].map((id) => confirmedBooking(id)),
+    { sleep: noSleep },
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(started, [100, 101, 102, 103]);
+  gates.forEach((release) => release());
+  assert.deepEqual(await cancellation, [100, 101, 102, 103]);
+});
+
 class TransactionFake implements BookingTransactionClient {
   readonly timeline: string[] = [];
   readonly submitted: Schedule[] = [];

@@ -53,6 +53,7 @@ type SystemHealth = {
   wakeWindow: string;
   lastSeenAt: string | null;
   scheduledAt: string | null;
+  heartbeatAgeSeconds: number | null;
   releaseTiming: {
     leadDays: number;
     hour: number;
@@ -912,10 +913,13 @@ export function TennisDashboard({
             />
             <SystemCheckCard
               label="Last runner heartbeat"
-              value={Boolean(systemHealth?.lastSeenAt)}
+              value={
+                Boolean(systemHealth?.lastSeenAt) &&
+                (systemHealth?.heartbeatAgeSeconds ?? Number.POSITIVE_INFINITY) <= 120
+              }
               detail={
                 systemHealth?.lastSeenAt
-                  ? `${formatDateTime(systemHealth.lastSeenAt)} SGT`
+                  ? `${formatDateTime(systemHealth.lastSeenAt)} SGT · ${formatHeartbeatAge(systemHealth.heartbeatAgeSeconds)} ago`
                   : "No external wake-up has reached the site yet."
               }
             />
@@ -1450,6 +1454,13 @@ function messageOf(error: unknown): string {
 function insideArmingWindow(releaseAt: string, now: number): boolean {
   const milliseconds = new Date(releaseAt).valueOf() - now;
   return milliseconds <= 240_000 && milliseconds >= -300_000;
+}
+
+function formatHeartbeatAge(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "unknown time";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3_600)}h`;
 }
 
 function historyDayNumber(value: string): string {

@@ -40,6 +40,12 @@ sanitized events. A composite slot key prevents overlapping active schedules,
 and a lease-based claim prevents two runner invocations from executing the same
 plan.
 
+Hosted execution begins at least 90 seconds before release, sends distinct
+booking cancellations with a small concurrent stagger, verifies history, then
+re-warms all replacement connections at T-3 seconds. Due plans execute in
+parallel so one user's release wait cannot delay another user's plan. The
+15-second local value is not treated as a sufficient hosted timeout budget.
+
 The Worker exports a scheduled handler and the application exposes
 `POST /api/automation/run-due`, authenticated with `AUTOMATION_SECRET`. The
 packaged Worker registers a once-per-minute Cron Trigger. Each invocation writes
@@ -56,4 +62,6 @@ The production Site uses two Google Cloud Scheduler HTTP jobs in
 `0-5 12 * * *`. They call the signed runner every minute from 11:30 through
 12:05 with a ten-minute attempt deadline. The Sites bypass and automation
 credentials are sent only as protected request headers; the Dooremi token never
-leaves Sites.
+leaves Sites. Court Signal only reports unattended automation as ready when the
+configured release time falls inside that wake window; releases outside it use
+the manual four-minute arming flow until external coverage is expanded.

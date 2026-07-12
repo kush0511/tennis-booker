@@ -183,23 +183,31 @@ export async function cancelActiveTennisBookings(
   const pending = new Set(bookingIds);
   const accepted = new Set<number>();
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    for (const bookingId of [...pending]) {
-      if (accepted.has(bookingId)) continue;
-      const started = monotonicNow();
-      try {
+    const attemptIds = [...pending].filter((bookingId) => !accepted.has(bookingId));
+    const outcomes = await Promise.allSettled(
+      attemptIds.map(async (bookingId, index) => {
+        // A small stagger avoids a single burst while keeping the total bounded
+        // by one upstream timeout rather than N sequential timeouts.
+        if (index > 0) await sleep(index * 75);
+        const started = monotonicNow();
         await client.cancelBooking(bookingId);
+        return { bookingId, elapsedMs: Math.round(monotonicNow() - started) };
+      }),
+    );
+    outcomes.forEach((outcome, index) => {
+      const bookingId = attemptIds[index];
+      if (outcome.status === "fulfilled") {
         accepted.add(bookingId);
         options.onTiming?.(
-          `cancel booking ${bookingId} accepted in ${Math.round(monotonicNow() - started)}ms`,
+          `cancel booking ${bookingId} accepted in ${outcome.value.elapsedMs}ms`,
         );
-      } catch (error) {
-        if (!(error instanceof DooremiError)) throw error;
-        options.onTiming?.(
-          `cancel booking ${bookingId} attempt ${attempt} failed in ${Math.round(monotonicNow() - started)}ms: ${safeErrorMessage(error)}`,
-        );
+        return;
       }
-      await sleep(150);
-    }
+      if (!(outcome.reason instanceof DooremiError)) throw outcome.reason;
+      options.onTiming?.(
+        `cancel booking ${bookingId} attempt ${attempt} failed: ${safeErrorMessage(outcome.reason)}`,
+      );
+    });
 
     await sleep(200 * attempt);
     const verificationStarted = monotonicNow();

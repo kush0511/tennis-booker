@@ -9,6 +9,7 @@ import {
   type BookingTransactionResult,
 } from "@/lib/transaction";
 import { safeErrorMessage } from "@/lib/dooremi";
+import { effectiveHostedCancellationLead } from "@/lib/automation";
 
 export type ExecutionResult = {
   status: "succeeded" | "partial" | "failed" | "missed";
@@ -94,8 +95,10 @@ export async function executeStoredSchedule(
     return result;
   }
 
-  const preparationAt =
-    release.valueOf() - config.cancellationLeadSeconds * 1_000;
+  const preparationLeadSeconds = effectiveHostedCancellationLead(
+    config.cancellationLeadSeconds,
+  );
+  const preparationAt = release.valueOf() - preparationLeadSeconds * 1_000;
   const preparationDelay = preparationAt - Date.now();
   if (preparationDelay > 0) {
     await new Promise<void>((resolve) => setTimeout(resolve, preparationDelay));
@@ -108,6 +111,9 @@ export async function executeStoredSchedule(
   const timing = (message: string) => {
     void appendScheduleEvent(stored.id, stored.userEmail, "info", message);
   };
+  timing(
+    `hosted preparation started at T-${preparationLeadSeconds}s; configured local lead is ${config.cancellationLeadSeconds}s`,
+  );
 
   try {
     const result = await executeBookingTransaction(dooremiClient(), schedule, {

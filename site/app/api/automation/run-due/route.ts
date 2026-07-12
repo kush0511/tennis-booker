@@ -7,6 +7,7 @@ import {
 } from "@/db/repository";
 import { data, HttpError, routeError } from "@/app/_server/api";
 import { domainConfig, executeStoredSchedule } from "@/app/_server/execution";
+import { HOSTED_ARMING_WINDOW_SECONDS } from "@/lib/automation";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -30,25 +31,32 @@ export async function POST(request: Request) {
       scheduledAt,
       cron: "Google Cloud Scheduler",
     });
-    const due = await listDueSchedules(now, 240);
-    const results = [];
-    for (const schedule of due) {
-      const claimed = await claimSchedule(schedule.id, 420);
-      if (!claimed) continue;
-      const settings = await getSettings(claimed.userEmail);
-      try {
-        results.push({
-          id: claimed.id,
-          ...(await executeStoredSchedule(claimed, domainConfig(settings))),
-        });
-      } catch (error) {
-        results.push({
-          id: claimed.id,
-          status: "failed",
-          message: error instanceof Error ? error.message : "Execution failed.",
-        });
-      }
-    }
+    const due = await listDueSchedules(now, HOSTED_ARMING_WINDOW_SECONDS);
+    // Every plan for the same release boundary must arm independently. A
+    // sequential loop lets the first user sleep until release while every later
+    // user misses the synchronized submission window.
+    const results = (
+      await Promise.all(
+        due.map(async (schedule) => {
+          const claimed = await claimSchedule(schedule.id, 420);
+          if (!claimed) return null;
+          const settings = await getSettings(claimed.userEmail);
+          try {
+            return {
+              id: claimed.id,
+              ...(await executeStoredSchedule(claimed, domainConfig(settings))),
+            };
+          } catch (error) {
+            return {
+              id: claimed.id,
+              status: "failed",
+              message:
+                error instanceof Error ? error.message : "Execution failed.",
+            };
+          }
+        }),
+      )
+    ).filter((result) => result !== null);
     return data({ checkedAt: now, schedules: results });
   } catch (error) {
     return routeError(error);
