@@ -112,7 +112,11 @@ button:disabled {
   gap: 10px;
 }
 
-.topbar-system-button {
+.desktop-nav {
+  display: none;
+}
+
+.desktop-nav button {
   background: transparent;
   border: 1px solid #cfd6ce;
   border-radius: 99px;
@@ -127,7 +131,7 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.topbar-system-button.is-active {
+.desktop-nav button.is-active {
   background: var(--forest);
   border-color: var(--forest);
   color: var(--lime);
@@ -1711,7 +1715,13 @@ button:disabled {
     position: relative;
   }
 
-  .topbar-system-button { display: inline-flex; }
+  .desktop-nav {
+    align-items: center;
+    display: flex;
+    gap: 4px;
+  }
+
+  .desktop-nav button { display: inline-flex; }
 
   .desktop-grid {
     background: var(--paper);
@@ -1739,6 +1749,22 @@ button:disabled {
   .history-column.mobile-active {
     display: block;
     grid-column: 1 / -1;
+  }
+
+  .desktop-grid.view-history {
+    display: block;
+  }
+
+  .desktop-grid.view-history .booking-column,
+  .desktop-grid.view-history .operations-column,
+  .desktop-grid.view-history .system-column {
+    display: none;
+  }
+
+  .desktop-grid.view-history .history-column {
+    display: block;
+    min-height: calc(100vh - 120px);
+    padding: 46px max(42px, 16vw);
   }
 
   .system-column.mobile-active {

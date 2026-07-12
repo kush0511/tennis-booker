@@ -455,13 +455,29 @@ export function TennisDashboard({
           COURT<span>/</span>SIGNAL
         </button>
         <div className="topbar-actions">
-          <button
-            className={`topbar-system-button ${tab === "system" ? "is-active" : ""}`}
-            type="button"
-            onClick={() => setTab("system")}
-          >
-            System
-          </button>
+          <nav className="desktop-nav" aria-label="Desktop navigation">
+            <button
+              className={tab === "book" || tab === "plans" ? "is-active" : ""}
+              type="button"
+              onClick={() => setTab("book")}
+            >
+              Book
+            </button>
+            <button
+              className={tab === "history" ? "is-active" : ""}
+              type="button"
+              onClick={() => setTab("history")}
+            >
+              My bookings
+            </button>
+            <button
+              className={tab === "system" ? "is-active" : ""}
+              type="button"
+              onClick={() => setTab("system")}
+            >
+              System
+            </button>
+          </nav>
           <span className={`connection-pill ${tokenConfigured ? "is-live" : ""}`}>
             <span /> {tokenConfigured ? "Dooremi live" : "Setup needed"}
           </span>
@@ -959,7 +975,7 @@ export function TennisDashboard({
       <nav className="mobile-nav" aria-label="Primary navigation">
         <NavButton label="Book" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
         <NavButton label="Plans" active={tab === "plans"} onClick={() => setTab("plans")} symbol="◷" count={activePlans.length} />
-        <NavButton label="Bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
+        <NavButton label="My bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
         <NavButton label="System" active={tab === "system"} onClick={() => setTab("system")} symbol="◎" />
       </nav>
 
