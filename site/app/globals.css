@@ -2066,3 +2066,197 @@ body { color: var(--ink); }
   .slot-end { font-size: 7px; }
   .slot-state { font-size: 6px; letter-spacing: .03em; }
 }
+
+/* New Abnormal — controlled-collage refinement */
+:root {
+  --ink: #12191b;
+  --ink-soft: #42585b;
+  --forest: #10282f;
+  --forest-2: #183f49;
+  --paper: #e6e2c9;
+  --surface: #f2eed8;
+  --line: #80999a;
+  --lime: #f7bc18;
+  --lime-deep: #d99a0b;
+  --mint: #18aab0;
+  --orange: #e74732;
+  --danger: #c9342b;
+  --cyan: #18a9c7;
+  --blue: #166c8e;
+  --navy: #17284a;
+  --chalk: #f5f1df;
+  --shadow: 0 18px 45px rgb(14 31 34 / 18%);
+}
+
+html, body { background: #10282f; }
+.app-shell {
+  background:
+    radial-gradient(circle at 7% 15%, rgb(24 169 199 / 10%) 0 3px, transparent 4px),
+    linear-gradient(116deg, transparent 0 67%, rgb(23 40 74 / 4%) 67% 68%, transparent 68%),
+    var(--paper);
+  background-size: 31px 29px, 100% 100%, auto;
+}
+
+.topbar {
+  background: rgb(230 226 201 / 94%);
+  border-bottom: 1px solid rgb(18 25 27 / 28%);
+  box-shadow: 0 8px 28px rgb(16 40 47 / 8%);
+}
+.wordmark { color: var(--navy); letter-spacing: .045em; }
+.wordmark span:not(.wordmark-dot) { color: var(--orange); }
+.wordmark-dot {
+  background: var(--cyan); border: 0; box-shadow: -3px 3px 0 var(--navy);
+  transform: rotate(-9deg);
+}
+.avatar-button {
+  background: var(--lime); border: 0; border-radius: 44% 56% 48% 52%;
+  box-shadow: -3px 3px 0 var(--navy); color: var(--navy); transform: rotate(2deg);
+}
+.connection-pill { border-color: rgb(18 25 27 / 35%); }
+.connection-pill.is-live { background: #26abb6; border-color: transparent; }
+
+.release-hero {
+  background:
+    linear-gradient(102deg, transparent 0 59%, rgb(255 255 255 / 8%) 59% 60%, transparent 60%),
+    linear-gradient(160deg, #179fb2 0 58%, #127a91 58% 100%);
+  border: 0; color: var(--chalk); overflow: hidden; padding: 16px 18px 15px;
+}
+.release-hero::after {
+  border: 3px solid rgb(245 241 223 / 72%); border-radius: 48% 52% 55% 45%;
+  box-shadow: 28px 7px 0 -12px var(--orange), -18px 20px 0 -11px var(--lime);
+  height: 42px; opacity: 1; right: 142px; top: 11px; transform: rotate(-11deg); width: 67px;
+}
+.release-hero::before {
+  color: rgb(245 241 223 / 86%); content: "0  15  30  40  /  ACE";
+  font-family: var(--font-display), sans-serif; font-size: 7px; font-style: italic;
+  right: 132px; top: 28px; transform: rotate(-11deg);
+}
+.release-hero .eyebrow { color: var(--lime); font-size: 8px; letter-spacing: .18em; }
+.release-hero h1 {
+  color: var(--chalk); font-size: clamp(28px, 6vw, 43px); font-style: italic;
+  letter-spacing: -.065em; text-shadow: -3px 3px 0 var(--navy); transform: rotate(-.5deg);
+}
+.release-detail { color: rgb(245 241 223 / 80%); font-weight: 650; }
+.readiness-strip { border-color: rgb(245 241 223 / 40%); }
+.readiness-strip span, .readiness-strip button { color: var(--chalk); }
+.readiness-strip i { border-radius: 50%; }
+.readiness-strip .is-ready i { background: var(--lime); border: 0; box-shadow: 0 0 0 2px rgb(18 25 27 / 20%); }
+.release-state { color: var(--chalk); }
+
+.date-section, .slot-section { padding-top: 16px; }
+.section-kicker { color: var(--orange); letter-spacing: .18em; }
+.section-heading-row h2, .aside-heading h2, .sheet-heading h2 {
+  color: var(--navy); letter-spacing: -.045em; text-transform: none;
+}
+.date-step-button, .date-input {
+  background: rgb(245 241 223 / 36%); border: 0; border-bottom: 1px solid var(--ink-soft);
+}
+.date-step-button { color: var(--blue); }
+.date-chip {
+  background: transparent; border: 0; border-bottom: 1px solid rgb(18 25 27 / 25%);
+  color: var(--ink); position: relative;
+}
+.date-chip + .date-chip { border-left: 0; }
+.date-chip.is-selected {
+  background: var(--lime); border: 0; box-shadow: -4px 4px 0 var(--orange);
+  color: var(--navy); transform: rotate(-1.5deg) translateY(-2px); z-index: 1;
+}
+.date-chip.is-selected::after {
+  border: 2px solid var(--navy); border-radius: 50%; content: ""; inset: 4px 10px;
+  opacity: .35; position: absolute; transform: rotate(7deg);
+}
+
+.facility-strip {
+  background: var(--navy); border: 0; border-radius: 0; color: var(--chalk);
+  overflow: hidden; position: relative;
+}
+.facility-strip::after {
+  color: rgb(245 241 223 / 16%); content: "/////  COURT  /////"; font-size: 20px;
+  font-weight: 900; letter-spacing: .12em; position: absolute; right: 10%; top: 3px;
+  transform: rotate(-2deg); white-space: nowrap;
+}
+.facility-strip > * { position: relative; z-index: 1; }
+.facility-monogram {
+  background: var(--cyan); border-radius: 44% 56% 40% 60%; color: var(--navy); transform: rotate(-6deg);
+}
+.facility-status { color: var(--lime); }
+
+.slot-grid { border-top: 1px solid rgb(18 25 27 / 42%); }
+.slot-card {
+  background: rgb(245 241 223 / 18%); border-color: rgb(18 25 27 / 24%);
+  color: var(--ink); min-height: 70px;
+}
+.slot-card:hover:not(:disabled) { background: rgb(24 169 199 / 10%); }
+.slot-card.is-selected {
+  background: var(--cyan); border: 0; box-shadow: inset -5px -4px 0 var(--blue);
+  color: var(--navy); padding: 8px; transform: rotate(-.6deg); z-index: 2;
+}
+.slot-card.is-selected::after {
+  background: var(--orange); border-radius: 50% 45% 52% 48%; color: white;
+  transform: rotate(8deg);
+}
+.slot-card.is-unavailable { background: rgb(18 25 27 / 4%); color: #91a09b; opacity: .72; }
+.slot-time { letter-spacing: -.04em; }
+.slot-state { color: var(--blue); }
+.slot-card.is-selected .slot-state { color: var(--navy); }
+
+.selection-dock {
+  background: var(--navy); border: 0; border-radius: 2px; box-shadow: -7px 7px 0 var(--orange);
+}
+.selection-dock span { color: var(--lime); }
+.primary-button, .run-plan-button {
+  background: var(--lime); border: 0; border-radius: 2px; box-shadow: -3px 3px 0 var(--cyan);
+  color: var(--navy);
+}
+
+.operations-column, .history-column, .system-column { background: rgb(242 238 216 / 74%); }
+.aside-heading { border-bottom: 2px solid var(--navy); }
+.count-badge {
+  background: var(--orange); border: 0; border-radius: 50% 44% 55% 46%; color: white;
+  transform: rotate(6deg);
+}
+.plan-card, .result-row, .booking-row, .system-check-card {
+  border-bottom-color: rgb(18 25 27 / 25%); padding-block: 13px;
+}
+.plan-marker { background: var(--navy); border-radius: 99px; width: 4px; }
+.plan-marker span { background: var(--orange); border-radius: 99px; }
+.status-pill { background: var(--lime); border: 0; border-radius: 2px; color: var(--navy); transform: rotate(-1deg); }
+.plan-actions { border-top-color: rgb(18 25 27 / 20%); }
+.inspect-link { color: var(--blue); }
+.safety-card, .trigger-card, .system-timing-card {
+  border: 0; border-radius: 2px; box-shadow: -6px 6px 0 var(--navy);
+}
+.safety-card { background: var(--cyan); color: var(--navy); }
+.trigger-card, .trigger-card.is-active { background: var(--lime); }
+.safety-icon { background: var(--orange); color: white; }
+.booking-date, .system-check-card > span { background: var(--cyan); border-radius: 47% 53% 45% 55%; }
+.system-timing-card { background: var(--navy); }
+
+.mobile-nav { background: var(--navy); border: 0; box-shadow: 0 -8px 30px rgb(16 40 47 / 18%); }
+.mobile-nav button { color: var(--chalk); opacity: .62; }
+.mobile-nav button.is-active { background: transparent; color: var(--lime); opacity: 1; }
+.mobile-nav button.is-active .nav-symbol { transform: rotate(-7deg) scale(1.1); }
+
+@media (min-width: 900px) {
+  .app-shell { padding: 18px; }
+  .topbar { border: 0; border-radius: 2px 2px 0 0; }
+  .desktop-nav button { border: 0; border-bottom: 2px solid transparent; color: var(--ink-soft); }
+  .desktop-nav button:last-child { border-right: 0; }
+  .desktop-nav button.is-active { background: transparent; border-bottom-color: var(--orange); color: var(--navy); }
+  .desktop-grid {
+    border: 0; border-radius: 0 0 2px 2px; box-shadow: 12px 12px 0 #127f94;
+    grid-template-columns: minmax(0, 1.62fr) minmax(320px, .68fr);
+  }
+  .booking-column { border-right-color: rgb(18 25 27 / 22%); }
+  .release-hero { padding: 14px 24px; }
+}
+
+@media (max-width: 520px) {
+  .release-hero { padding: 12px 11px; }
+  .release-hero h1 { font-size: 27px; }
+  .date-chip { flex-basis: 50px; }
+  .slot-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .slot-card:nth-child(4n + 1) { border-left: 0; }
+  .slot-card:nth-child(3n + 1) { border-left: 1px solid rgb(18 25 27 / 24%); }
+  .slot-card { min-height: 64px; }
+}
