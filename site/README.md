@@ -46,6 +46,14 @@ packaged Worker registers a once-per-minute Cron Trigger. Each invocation writes
 a non-secret heartbeat before claiming due plans, and the D1 lease prevents
 overlapping invocations from executing the same plan twice. Local ScheduledEvent
 dispatch is verified, but the current Sites deployment control plane accepts the
-artifact without installing its Cron Trigger. Keep
-`AUTOMATION_TRIGGER_ENABLED=false` until the protected
-`GET /api/automation/status` endpoint reports a production heartbeat.
+artifact without installing its Cron Trigger. The protected
+`GET /api/automation/status` endpoint remains available for deployment checks.
+Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
+connected.
+
+The production Site uses two Google Cloud Scheduler HTTP jobs in
+`asia-southeast1`, evaluated in `Asia/Singapore`: `30-59 11 * * *` and
+`0-5 12 * * *`. They call the signed runner every minute from 11:30 through
+12:05 with a ten-minute attempt deadline. The Sites bypass and automation
+credentials are sent only as protected request headers; the Dooremi token never
+leaves Sites.

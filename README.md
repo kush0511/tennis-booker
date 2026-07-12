@@ -197,8 +197,10 @@ plans with a lease so overlapping invocations cannot execute the same release
 twice. Local ScheduledEvent dispatch is verified, but the current ChatGPT Sites
 deployment accepts the artifact without installing the Cron Trigger: no
 production heartbeat appeared across multiple trigger boundaries. Hosted plans
-therefore retain the manual in-window action, and the macOS runner remains the
-reliable unattended implementation until Sites exposes trigger management.
+are now woken externally by two Google Cloud Scheduler jobs every minute from
+11:30 through 12:05 Singapore time. The signed runner still performs the exact
+release timing and D1 lease claiming; the macOS runner remains an independent
+fallback.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

@@ -618,7 +618,16 @@ export function TennisDashboard({
               </p>
             </div>
           </div>
-          {!automationReady ? (
+          {automationReady ? (
+            <div className="trigger-card is-active">
+              <strong>Google Cloud wake window active</strong>
+              <p>
+                Court Signal checks for armed releases every minute from 11:30 AM
+                through 12:05 PM Singapore time. The D1 lease prevents duplicate
+                execution when wake-up calls overlap.
+              </p>
+            </div>
+          ) : (
             <div className="trigger-card">
               <strong>Unattended trigger not connected</strong>
               <p>
@@ -627,7 +636,7 @@ export function TennisDashboard({
                 its four-minute window or keep using the macOS TUI for unattended releases.
               </p>
             </div>
-          ) : null}
+          )}
         </aside>
 
         <section

@@ -1020,6 +1020,19 @@ button:disabled {
   margin: 6px 0 0;
 }
 
+.trigger-card.is-active {
+  background: #edf8dc;
+  border-color: #c9dda7;
+}
+
+.trigger-card.is-active strong {
+  color: #355c16;
+}
+
+.trigger-card.is-active p {
+  color: #52712e;
+}
+
 .booking-row {
   align-items: center;
   background: var(--surface);

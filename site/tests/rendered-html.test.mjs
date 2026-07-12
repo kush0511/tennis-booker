@@ -63,6 +63,7 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.match(layout, /viewportFit:\s*"cover"/);
   assert.match(dashboard, /mobile-nav/);
   assert.doesNotMatch(dashboard, /DOOREMI_BEARER_TOKEN\s*[=:]/);
+  assert.match(dashboard, /Google Cloud wake window active/);
   assert.match(api, /getRuntimeEnv\(\)\.DOOREMI_BEARER_TOKEN/);
   assert.doesNotMatch(page, /Date\.now\(\)/);
   assert.match(dashboard, /useState<number \| null>\(null\)/);
