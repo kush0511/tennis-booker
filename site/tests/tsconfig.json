@@ -13,6 +13,8 @@
   "include": [
     "../lib/**/*.ts",
     "./*.test.ts",
+    "./*.test.tsx",
+    "./repository-stub.d.ts",
     "./fixtures/*.json",
     "../../shared/*.json"
   ],

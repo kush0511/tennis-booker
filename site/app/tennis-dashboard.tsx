@@ -53,9 +53,8 @@ export function TennisDashboard({
   const [settings, setSettings] = useState(initialSettings);
   const [schedules, setSchedules] = useState(initialSchedules);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
-  const [selectedDay, setSelectedDay] = useState(() =>
-    suggestedSessionDay(initialSettings.bookingLeadDays, 0),
-  );
+  const [selectedDay, setSelectedDay] = useState("");
+  const [dayAnchor, setDayAnchor] = useState<number | null>(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [selectedTimes, setSelectedTimes] = useState<string[]>([]);
   const [loadingAvailability, setLoadingAvailability] = useState(false);
@@ -64,20 +63,23 @@ export function TennisDashboard({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState<number | null>(null);
 
   const dates = useMemo(
     () =>
-      Array.from({ length: 7 }, (_, index) =>
-        suggestedSessionDay(settings.bookingLeadDays, index),
-      ),
-    [settings.bookingLeadDays],
+      dayAnchor === null
+        ? []
+        : Array.from({ length: 7 }, (_, index) =>
+            suggestedSessionDay(settings.bookingLeadDays, index, dayAnchor),
+          ),
+    [dayAnchor, settings.bookingLeadDays],
   );
   const release = useMemo(
-    () => releaseFor(selectedDay, settings),
+    () => (selectedDay ? releaseFor(selectedDay, settings) : null),
     [selectedDay, settings],
   );
-  const releaseOpen = now >= release.getTime();
+  const releaseOpen =
+    release !== null && now !== null && now >= release.getTime();
   const activePlans = schedules.filter((item) =>
     ["pending", "running"].includes(item.status),
   );
@@ -86,12 +88,29 @@ export function TennisDashboard({
     .slice(0, 6);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
+    let clockTimer: number | null = null;
+    const startupTimer = window.setTimeout(() => {
+      const current = Date.now();
+      setNow(current);
+      setDayAnchor(current);
+      setSelectedDay((day) =>
+        day || suggestedSessionDay(initialSettings.bookingLeadDays, 0, current),
+      );
+      clockTimer = window.setInterval(() => setNow(Date.now()), 1000);
+    }, 0);
+    return () => {
+      window.clearTimeout(startupTimer);
+      if (clockTimer !== null) window.clearInterval(clockTimer);
+    };
+  }, [initialSettings.bookingLeadDays]);
 
   const loadAvailability = useCallback(async () => {
-    if (!tokenConfigured || !settings.facilityId || !settings.facilityCategoryId) {
+    if (
+      !selectedDay ||
+      !tokenConfigured ||
+      !settings.facilityId ||
+      !settings.facilityCategoryId
+    ) {
       setAvailability(null);
       return;
     }
@@ -278,7 +297,9 @@ export function TennisDashboard({
         body: JSON.stringify(next),
       });
       setSettings(saved);
-      setSelectedDay(suggestedSessionDay(saved.bookingLeadDays, 0));
+      const current = Date.now();
+      setDayAnchor(current);
+      setSelectedDay(suggestedSessionDay(saved.bookingLeadDays, 0, current));
       setSettingsOpen(false);
       setSelectedTimes([]);
       setNotice("Court settings saved.");
@@ -327,18 +348,32 @@ export function TennisDashboard({
               <span className="court-ball" />
             </div>
             <div className="hero-copy">
-              <p className="eyebrow">{releaseOpen ? "Booking window open" : "Next release"}</p>
+              <p className="eyebrow">
+                {release === null
+                  ? "Court clock"
+                  : releaseOpen
+                    ? "Booking window open"
+                    : "Next release"}
+              </p>
               <h1 id="booking-heading">
-                {releaseOpen ? "Ready when you are." : countdownLabel(release.getTime() - now)}
+                {release === null || now === null
+                  ? "Syncing release…"
+                  : releaseOpen
+                    ? "Ready when you are."
+                    : countdownLabel(release.getTime() - now)}
               </h1>
               <p className="release-detail">
-                {formatDay(selectedDay)} · {formatClock(release)} SGT
+                {release === null
+                  ? "Singapore time"
+                  : `${formatDay(selectedDay)} · ${formatClock(release)} SGT`}
               </p>
             </div>
             <div
               className="release-state"
               aria-label={
-                releaseOpen
+                release === null
+                  ? "Syncing court clock"
+                  : releaseOpen
                   ? "Booking is open"
                   : automationReady
                     ? "Booking is armed"
@@ -346,7 +381,13 @@ export function TennisDashboard({
               }
             >
               <span className="pulse-ring" />
-              {releaseOpen ? "OPEN" : automationReady ? "TRACKING" : "MANUAL"}
+              {release === null
+                ? "SYNC"
+                : releaseOpen
+                  ? "OPEN"
+                  : automationReady
+                    ? "TRACKING"
+                    : "MANUAL"}
             </div>
           </div>
 
@@ -511,7 +552,9 @@ export function TennisDashboard({
                       <span>Up to {settings.maximumSessions} synchronized</span>
                       {!automationReady ? <span>Manual trigger required</span> : null}
                     </div>
-                    {schedule.status === "pending" && insideArmingWindow(schedule.releaseAt, now) ? (
+                    {schedule.status === "pending" &&
+                    now !== null &&
+                    insideArmingWindow(schedule.releaseAt, now) ? (
                       <button
                         className="run-plan-button"
                         type="button"
@@ -827,13 +870,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data as T;
 }
 
-function suggestedSessionDay(leadDays: number, offset: number): string {
+function suggestedSessionDay(
+  leadDays: number,
+  offset: number,
+  instant: number,
+): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Singapore",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(new Date(instant));
   const year = Number(parts.find((part) => part.type === "year")?.value);
   const month = Number(parts.find((part) => part.type === "month")?.value);
   const day = Number(parts.find((part) => part.type === "day")?.value);

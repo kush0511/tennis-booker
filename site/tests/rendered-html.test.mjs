@@ -53,8 +53,9 @@ test("removes all starter preview infrastructure", async () => {
 });
 
 test("ships mobile viewport and server-only token boundaries", async () => {
-  const [layout, dashboard, api] = await Promise.all([
+  const [layout, page, dashboard, api] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/tennis-dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/_server/api.ts", import.meta.url), "utf8"),
   ]);
@@ -63,4 +64,7 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.match(dashboard, /mobile-nav/);
   assert.doesNotMatch(dashboard, /DOOREMI_BEARER_TOKEN\s*[=:]/);
   assert.match(api, /getRuntimeEnv\(\)\.DOOREMI_BEARER_TOKEN/);
+  assert.doesNotMatch(page, /Date\.now\(\)/);
+  assert.match(dashboard, /useState<number \| null>\(null\)/);
+  assert.doesNotMatch(dashboard, /useState\(\(\) => Date\.now\(\)\)/);
 });
