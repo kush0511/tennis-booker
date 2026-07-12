@@ -457,11 +457,18 @@ export function TennisDashboard({
         <div className="topbar-actions">
           <nav className="desktop-nav" aria-label="Desktop navigation">
             <button
-              className={tab === "book" || tab === "plans" ? "is-active" : ""}
+              className={tab === "book" ? "is-active" : ""}
               type="button"
               onClick={() => setTab("book")}
             >
               Book
+            </button>
+            <button
+              className={tab === "plans" ? "is-active" : ""}
+              type="button"
+              onClick={() => setTab("plans")}
+            >
+              Plans {activePlans.length ? `(${activePlans.length})` : ""}
             </button>
             <button
               className={tab === "history" ? "is-active" : ""}
@@ -498,10 +505,6 @@ export function TennisDashboard({
           aria-labelledby="booking-heading"
         >
           <div className="release-hero">
-            <div className="court-lines" aria-hidden="true">
-              <span className="court-net" />
-              <span className="court-ball" />
-            </div>
             <div className="hero-copy">
               <p className="eyebrow">
                 {release === null
@@ -514,7 +517,7 @@ export function TennisDashboard({
                 {release === null || now === null
                   ? "Syncing release…"
                   : releaseOpen
-                    ? "Ready when you are."
+                    ? "COURTS OPEN"
                     : countdownLabel(release.getTime() - now)}
               </h1>
               <p className="release-detail">
@@ -522,6 +525,17 @@ export function TennisDashboard({
                   ? "Singapore time"
                   : `${formatDay(selectedDay)} · ${formatClock(release)} SGT`}
               </p>
+            </div>
+            <div className="readiness-strip" aria-label="System readiness">
+              <span className={tokenConfigured ? "is-ready" : ""}>
+                <i /> DOOREMI {tokenConfigured ? "LIVE" : "OFF"}
+              </span>
+              <span className={automationReady ? "is-ready" : ""}>
+                <i /> AUTO {automationReady ? "ARMED" : "MANUAL"}
+              </span>
+              <button type="button" onClick={() => setTab("system")}>
+                SYSTEM ↗
+              </button>
             </div>
             <div
               className="release-state"
@@ -737,35 +751,37 @@ export function TennisDashboard({
                       <span>Up to {settings.maximumSessions} synchronized</span>
                       {!automationReady ? <span>Manual trigger required</span> : null}
                     </div>
-                    {schedule.status === "pending" &&
-                    now !== null &&
-                    insideArmingWindow(schedule.releaseAt, now) ? (
+                    <div className="plan-actions">
+                      {schedule.status === "pending" &&
+                      now !== null &&
+                      insideArmingWindow(schedule.releaseAt, now) ? (
+                        <button
+                          className="run-plan-button"
+                          type="button"
+                          onClick={() => setPendingAction({ kind: "run", schedule })}
+                          disabled={submitting || !tokenConfigured}
+                        >
+                          Run release
+                        </button>
+                      ) : null}
+                      {schedule.status === "pending" ? (
+                        <button
+                          className="danger-link"
+                          type="button"
+                          onClick={() => setPendingAction({ kind: "cancel-plan", schedule })}
+                          disabled={submitting}
+                        >
+                          Cancel plan
+                        </button>
+                      ) : null}
                       <button
-                        className="run-plan-button"
+                        className="inspect-link"
                         type="button"
-                        onClick={() => setPendingAction({ kind: "run", schedule })}
-                        disabled={submitting || !tokenConfigured}
+                        onClick={() => void openSchedule(schedule)}
                       >
-                        Run this release
+                        Run details
                       </button>
-                    ) : null}
-                    {schedule.status === "pending" ? (
-                      <button
-                        className="danger-link"
-                        type="button"
-                        onClick={() => setPendingAction({ kind: "cancel-plan", schedule })}
-                        disabled={submitting}
-                      >
-                        Cancel plan
-                      </button>
-                    ) : null}
-                    <button
-                      className="inspect-link"
-                      type="button"
-                      onClick={() => void openSchedule(schedule)}
-                    >
-                      View run details
-                    </button>
+                    </div>
                   </div>
                 </article>
               ))
