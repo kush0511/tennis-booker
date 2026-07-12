@@ -69,7 +69,7 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.doesNotMatch(dashboard, /useState\(\(\) => Date\.now\(\)\)/);
 });
 
-test("packages the unattended runner and protected heartbeat status", async () => {
+test("packages the scheduled runner and protected heartbeat status", async () => {
   const [wranglerConfig, worker, statusRoute] = await Promise.all([
     readFile(new URL("../dist/server/wrangler.json", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),

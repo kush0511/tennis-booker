@@ -44,5 +44,8 @@ The Worker exports a scheduled handler and the application exposes
 `POST /api/automation/run-due`, authenticated with `AUTOMATION_SECRET`. The
 packaged Worker registers a once-per-minute Cron Trigger. Each invocation writes
 a non-secret heartbeat before claiming due plans, and the D1 lease prevents
-overlapping invocations from executing the same plan twice. The protected
-`GET /api/automation/status` endpoint is available for deployment verification.
+overlapping invocations from executing the same plan twice. Local ScheduledEvent
+dispatch is verified, but the current Sites deployment control plane accepts the
+artifact without installing its Cron Trigger. Keep
+`AUTOMATION_TRIGGER_ENABLED=false` until the protected
+`GET /api/automation/status` endpoint reports a production heartbeat.

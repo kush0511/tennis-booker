@@ -194,9 +194,11 @@ Court Signal includes the complete server-side runner and a signed
 `POST /api/automation/run-due` boundary. Its packaged Worker registers a
 once-per-minute Cron Trigger, writes a non-secret D1 heartbeat, and claims due
 plans with a lease so overlapping invocations cannot execute the same release
-twice. Immediate booking, live availability, history, cancellation, schedule
-persistence, manual in-window execution, and unattended hosted execution share
-the same transaction rules; the macOS runner remains an independent fallback.
+twice. Local ScheduledEvent dispatch is verified, but the current ChatGPT Sites
+deployment accepts the artifact without installing the Cron Trigger: no
+production heartbeat appeared across multiple trigger boundaries. Hosted plans
+therefore retain the manual in-window action, and the macOS runner remains the
+reliable unattended implementation until Sites exposes trigger management.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer
