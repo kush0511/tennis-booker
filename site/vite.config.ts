@@ -8,12 +8,33 @@ const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
 
 const { d1, r2 } = hostingConfig;
 
+const localRuntimeVariableNames = [
+  "DOOREMI_BEARER_TOKEN",
+  "DOOREMI_FACILITY_ID",
+  "DOOREMI_CATEGORY_ID",
+  "AUTOMATION_SECRET",
+  "AUTOMATION_TRIGGER_ENABLED",
+] as const;
+
+// Shell-provided values are forwarded only to the local Workers runtime. When
+// they are absent (including production packaging), no values are serialized
+// into the generated Wrangler configuration.
+const localRuntimeVars = Object.fromEntries(
+  localRuntimeVariableNames.flatMap((name) => {
+    const value = process.env[name];
+    return value ? [[name, value]] : [];
+  }),
+);
+
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  ...(Object.keys(localRuntimeVars).length > 0
+    ? { vars: localRuntimeVars }
+    : {}),
   d1_databases: d1
     ? [
         {
