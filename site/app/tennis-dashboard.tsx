@@ -120,9 +120,27 @@ export function TennisDashboard({
   const recentPlans = schedules
     .filter((item) => !["pending", "running"].includes(item.status))
     .slice(0, 6);
-  const maximumSelectable = Math.min(
-    settings.maximumSessions,
-    availability?.maximumSelectableSlots || settings.maximumSessions,
+  const reservedTimes = useMemo(
+    () =>
+      new Set([
+        ...bookings
+          .filter((booking) => booking.eventDay === selectedDay)
+          .flatMap((booking) =>
+            booking.eventTimes.length ? booking.eventTimes : [booking.eventTime],
+          ),
+        ...schedules
+          .filter(
+            (schedule) =>
+              schedule.eventDay === selectedDay &&
+              ["pending", "running"].includes(schedule.status),
+          )
+          .flatMap((schedule) => schedule.eventTimes),
+      ]),
+    [bookings, schedules, selectedDay],
+  );
+  const maximumSelectable = Math.max(
+    0,
+    settings.maximumSessions - reservedTimes.size,
   );
 
   useEffect(() => {
@@ -233,7 +251,7 @@ export function TennisDashboard({
   }
 
   function toggleSlot(slot: AvailabilitySlot) {
-    if (!slot.available) return;
+    if (!slot.available || reservedTimes.has(slot.eventTime)) return;
     setSelectedTimes((current) => {
       if (current.includes(slot.eventTime)) {
         return current.filter((value) => value !== slot.eventTime);
@@ -655,7 +673,7 @@ export function TennisDashboard({
                 <strong>{availability?.facilityName || "Tennis court"}</strong>
                 <span>
                   {availability
-                    ? `${availability.slots.filter((slot) => slot.available).length} sessions available · select up to ${maximumSelectable}`
+                    ? `${availability.slots.filter((slot) => slot.available && !reservedTimes.has(slot.eventTime)).length} sessions available · select up to ${maximumSelectable}`
                     : "Live availability appears here"}
                 </span>
               </div>
@@ -669,19 +687,26 @@ export function TennisDashboard({
                   ))
                 : availability?.slots.map((slot) => {
                     const selected = selectedTimes.includes(slot.eventTime);
+                    const reserved = reservedTimes.has(slot.eventTime);
                     return (
                       <button
                         type="button"
                         key={`${slot.id}-${slot.eventTime}`}
-                        className={`slot-card ${selected ? "is-selected" : ""} ${!slot.available ? "is-unavailable" : ""}`}
-                        disabled={!slot.available}
+                        className={`slot-card ${selected ? "is-selected" : ""} ${!slot.available || reserved ? "is-unavailable" : ""}`}
+                        disabled={!slot.available || reserved}
                         onClick={() => toggleSlot(slot)}
                         aria-pressed={selected}
                       >
                         <span className="slot-time">{slot.eventTime.split("-")[0]}</span>
                         <span className="slot-end">to {slot.eventTime.split("-")[1]}</span>
                         <span className="slot-state">
-                          {selected ? "Selected" : slot.available ? "Available" : "Booked"}
+                          {selected
+                            ? "Selected"
+                            : reserved
+                              ? "Booked / planned"
+                              : slot.available
+                                ? "Available"
+                                : "Booked"}
                         </span>
                       </button>
                     );
@@ -779,7 +804,7 @@ export function TennisDashboard({
                         type="button"
                         onClick={() => void openSchedule(schedule)}
                       >
-                        Run details
+                        View run details
                       </button>
                     </div>
                   </div>
