@@ -17,6 +17,7 @@ const props = {
     maximumSessions: 6,
   },
   initialSchedules: [],
+  initialDay: "2026-07-26",
   tokenConfigured: true,
   automationReady: false,
 };

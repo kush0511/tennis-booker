@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { suggestedSessionDay } from "../lib/domain.js";
 import type {
   ScheduleEvent,
   StoredSchedule,
@@ -40,6 +41,7 @@ type DashboardProps = {
   user: { email: string; displayName: string };
   initialSettings: UserSettings;
   initialSchedules: StoredSchedule[];
+  initialDay: string;
   tokenConfigured: boolean;
   automationReady: boolean;
 };
@@ -74,6 +76,7 @@ export function TennisDashboard({
   user,
   initialSettings,
   initialSchedules,
+  initialDay,
   tokenConfigured,
   automationReady,
 }: DashboardProps) {
@@ -81,7 +84,7 @@ export function TennisDashboard({
   const [settings, setSettings] = useState(initialSettings);
   const [schedules, setSchedules] = useState(initialSchedules);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
-  const [selectedDay, setSelectedDay] = useState("");
+  const [selectedDay, setSelectedDay] = useState(initialDay);
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [selectedTimes, setSelectedTimes] = useState<string[]>([]);
   const [loadingAvailability, setLoadingAvailability] = useState(false);
@@ -98,6 +101,10 @@ export function TennisDashboard({
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [loadingSystem, setLoadingSystem] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
+  const availabilityCache = useRef(
+    new Map<string, { data: Availability; fetchedAt: number }>(),
+  );
+  const availabilityRequest = useRef(0);
 
   const dates = useMemo(
     () =>
@@ -148,9 +155,6 @@ export function TennisDashboard({
     const startupTimer = window.setTimeout(() => {
       const current = Date.now();
       setNow(current);
-      setSelectedDay((day) =>
-        day || suggestedSessionDay(initialSettings.bookingLeadDays, 0, current),
-      );
       clockTimer = window.setInterval(() => setNow(Date.now()), 1000);
     }, 0);
     return () => {
@@ -159,7 +163,7 @@ export function TennisDashboard({
     };
   }, [initialSettings.bookingLeadDays]);
 
-  const loadAvailability = useCallback(async () => {
+  const loadAvailability = useCallback(async (force = false) => {
     if (
       !selectedDay ||
       !tokenConfigured ||
@@ -169,12 +173,21 @@ export function TennisDashboard({
       setAvailability(null);
       return;
     }
+    const day = selectedDay;
+    const cached = availabilityCache.current.get(day);
+    if (!force && cached && Date.now() - cached.fetchedAt < 15_000) {
+      setAvailability(cached.data);
+      return;
+    }
+    const requestId = ++availabilityRequest.current;
     setLoadingAvailability(true);
     setError(null);
     try {
       const result = await api<Availability>(
-        `/api/availability?date=${encodeURIComponent(selectedDay)}`,
+        `/api/availability?date=${encodeURIComponent(day)}`,
       );
+      availabilityCache.current.set(day, { data: result, fetchedAt: Date.now() });
+      if (requestId !== availabilityRequest.current || day !== selectedDay) return;
       setAvailability(result);
       setSelectedTimes((current) =>
         current.filter((time) =>
@@ -182,10 +195,10 @@ export function TennisDashboard({
         ),
       );
     } catch (caught) {
-      setAvailability(null);
+      if (requestId === availabilityRequest.current) setAvailability(null);
       setError(messageOf(caught));
     } finally {
-      setLoadingAvailability(false);
+      if (requestId === availabilityRequest.current) setLoadingAvailability(false);
     }
   }, [selectedDay, settings, tokenConfigured]);
 
@@ -660,7 +673,7 @@ export function TennisDashboard({
               <button
                 className="text-button"
                 type="button"
-                onClick={() => void loadAvailability()}
+                onClick={() => void loadAvailability(true)}
                 disabled={loadingAvailability || !tokenConfigured}
               >
                 {loadingAvailability ? "Checking…" : "Refresh"}
@@ -1341,25 +1354,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload.error || `Request failed (${response.status}).`);
   }
   return payload.data as T;
-}
-
-function suggestedSessionDay(
-  leadDays: number,
-  offset: number,
-  instant: number,
-): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Singapore",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(instant));
-  const year = Number(parts.find((part) => part.type === "year")?.value);
-  const month = Number(parts.find((part) => part.type === "month")?.value);
-  const day = Number(parts.find((part) => part.type === "day")?.value);
-  const current = new Date(Date.UTC(year, month - 1, day));
-  current.setUTCDate(current.getUTCDate() + leadDays + offset);
-  return current.toISOString().slice(0, 10);
 }
 
 function shiftSessionDay(day: string, offset: number): string {

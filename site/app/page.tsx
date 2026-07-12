@@ -59,6 +59,7 @@ export default async function Home() {
     getSettings(user.email),
     listSchedules(user.email),
   ]);
+  const { currentSuggestedSessionDay } = await import("@/lib/domain");
   const tokenConfigured = Boolean(
     getRuntimeEnv().DOOREMI_BEARER_TOKEN,
   );
@@ -73,6 +74,7 @@ export default async function Home() {
       user={{ email: user.email, displayName: user.displayName }}
       initialSettings={settings}
       initialSchedules={schedules}
+      initialDay={currentSuggestedSessionDay(settings.bookingLeadDays)}
       tokenConfigured={tokenConfigured}
       automationReady={automationReady}
     />

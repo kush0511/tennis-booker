@@ -197,6 +197,29 @@ export function releaseAt(
   );
 }
 
+export function suggestedSessionDay(
+  leadDays: number,
+  offset: number,
+  instant: number,
+): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(instant));
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const day = Number(parts.find((part) => part.type === "day")?.value);
+  const current = new Date(Date.UTC(year, month - 1, day));
+  current.setUTCDate(current.getUTCDate() + leadDays + offset);
+  return current.toISOString().slice(0, 10);
+}
+
+export function currentSuggestedSessionDay(leadDays: number): string {
+  return suggestedSessionDay(leadDays, 0, Date.now());
+}
+
 export function scheduleEventTimes(schedule: Schedule): string[] {
   const values =
     schedule.eventTimes && schedule.eventTimes.length > 0
