@@ -27,6 +27,38 @@ import uuid
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+from tennis_core import (
+    APIError,
+    AuthenticationError,
+    BookerError,
+    CancellationError,
+    Config,
+    ConnectivityError,
+    InputError,
+    NetworkTimeoutError,
+    PartialBookingError,
+    RateLimitError,
+    RebookingSubmissionError,
+    SGT,
+    StoreError,
+    SystemError,
+    bearer_tokens_from_har,
+    booking_payload,
+    build_rebooking_batch,
+    build_schedule_record,
+    display_datetime,
+    filter_active_tennis_bookings,
+    normalize_bearer_token,
+    normalized_event_day,
+    parse_availability_payload,
+    parse_event_day,
+    release_at,
+    schedule_booking_targets,
+    schedule_event_times,
+    single_target_schedule,
+    validate_event_time,
+)
+
 
 APP_NAME = "TennisBooker"
 KEYCHAIN_SERVICE = "app.tennis-booker.local"
@@ -34,94 +66,6 @@ KEYCHAIN_ACCOUNT = "dooremi-bearer"
 AGENT_LABEL = "app.tennis-booker.local"
 BASE_URL = "https://api.dooremi.com.sg"
 IOS_USER_AGENT = "LifeUp/1 CFNetwork/3860.600.12 Darwin/25.5.0"
-SGT = dt.timezone(dt.timedelta(hours=8), name="SGT")
-
-
-class BookerError(Exception):
-    pass
-
-
-class InputError(BookerError):
-    pass
-
-
-class APIError(BookerError):
-    pass
-
-
-class AuthenticationError(APIError):
-    pass
-
-
-class NetworkTimeoutError(APIError):
-    pass
-
-
-class ConnectivityError(APIError):
-    pass
-
-
-class RateLimitError(APIError):
-    pass
-
-
-class PartialBookingError(APIError):
-    def __init__(self, results, errors, submit_skew_ms):
-        self.results = results
-        self.errors = errors
-        self.submit_skew_ms = submit_skew_ms
-        confirmed = len(results)
-        total = confirmed + len(errors)
-        super().__init__(
-            "{} of {} requests returned a success. Refresh My Bookings before "
-            "retrying; one or more requests failed or had an ambiguous "
-            "response.".format(
-                confirmed, total
-            )
-        )
-
-    @property
-    def booking_order_ids(self):
-        return [
-            item["result"].get("booking_order_id")
-            for item in self.results
-            if item["result"].get("booking_order_id") is not None
-        ]
-
-
-class CancellationError(APIError):
-    pass
-
-
-class RebookingSubmissionError(APIError):
-    pass
-
-
-class StoreError(BookerError):
-    pass
-
-
-class SystemError(BookerError):
-    pass
-
-
-@dataclasses.dataclass
-class Config:
-    facility_id: int = 0
-    facility_category_id: int = 0
-    booking_lead_days: int = 14
-    release_hour: int = 12
-    release_minute: int = 0
-    wake_lead_seconds: int = 180
-    arming_window_seconds: int = 240
-    grace_period_seconds: int = 300
-    fire_delay_milliseconds: int = 10
-    max_sessions_per_booking: int = 6
-
-    @classmethod
-    def from_dict(cls, value):
-        allowed = {field.name for field in dataclasses.fields(cls)}
-        return cls(**{key: item for key, item in value.items() if key in allowed})
 
 
 class Paths:
@@ -194,46 +138,6 @@ def mac_power_state():
     except (OSError, ValueError, TypeError, IndexError):
         pass
     return state
-
-
-def parse_event_day(value):
-    try:
-        parsed = dt.datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as error:
-        raise InputError("Use a real session date in YYYY-MM-DD format.") from error
-    if parsed.strftime("%Y-%m-%d") != value:
-        raise InputError("Use a real session date in YYYY-MM-DD format.")
-    return parsed
-
-
-def validate_event_time(value):
-    match = re.fullmatch(
-        r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)",
-        value,
-    )
-    if not match:
-        raise InputError("Use an hourly range such as 16:00-17:00.")
-    start = int(match.group(1)) * 60 + int(match.group(2))
-    end = int(match.group(3)) * 60 + int(match.group(4))
-    if start >= end:
-        raise InputError("The session end time must be after its start time.")
-
-
-def release_at(event_day, config):
-    session_date = parse_event_day(event_day)
-    release_date = session_date - dt.timedelta(days=config.booking_lead_days)
-    return dt.datetime(
-        release_date.year,
-        release_date.month,
-        release_date.day,
-        config.release_hour,
-        config.release_minute,
-        tzinfo=SGT,
-    )
-
-
-def display_datetime(value):
-    return value.astimezone(SGT).strftime("%a, %-d %b %Y %H:%M:%S")
 
 
 def pmset_datetime(value):
@@ -433,9 +337,7 @@ class Keychain:
         return result
 
     def save(self, raw_token):
-        token = re.sub(r"^Bearer\s+", "", raw_token.strip(), flags=re.IGNORECASE)
-        if not token:
-            raise InputError("The Bearer token cannot be empty.")
+        token = normalize_bearer_token(raw_token)
         self._run(
             [
                 "add-generic-password",
@@ -492,58 +394,11 @@ class Keychain:
     def import_har(self, path):
         try:
             har = json.loads(Path(path).expanduser().read_text("utf-8"))
-            entries = har["log"]["entries"]
-        except (OSError, ValueError, KeyError, TypeError) as error:
+        except (OSError, ValueError, TypeError) as error:
             raise InputError("That file is not a readable HAR capture.") from error
-        tokens = set()
-        for entry in entries:
-            for header in entry.get("request", {}).get("headers", []):
-                if header.get("name", "").lower() != "authorization":
-                    continue
-                value = header.get("value", "")
-                if value.lower().startswith("bearer "):
-                    tokens.add(value[7:])
-        if not tokens:
-            raise InputError("No Bearer Authorization header was found in that HAR.")
-        token = sorted(tokens)[0]
-        self.save(token)
+        tokens = bearer_tokens_from_har(har)
+        self.save(tokens[0])
         return len(tokens)
-
-
-def parse_availability_payload(payload, preferred_facility_id):
-    if payload.get("status") != 0:
-        raise APIError(
-            "Dooremi rejected the request ({}): {}".format(
-                payload.get("status"), payload.get("msg", "Unknown error")
-            )
-        )
-    facilities = [
-        item.get("facility", {})
-        for item in (payload.get("content") or [])
-        if item.get("facility")
-    ]
-    facility = next(
-        (item for item in facilities if item.get("id") == preferred_facility_id),
-        facilities[0] if facilities else None,
-    )
-    if not facility:
-        raise APIError("No facility availability was returned for that date.")
-    slots = []
-    for item in facility.get("condoBookingFacilityDateBeanList") or []:
-        slot = {
-            "id": item.get("id"),
-            "facility_id": item.get("facilityId", preferred_facility_id),
-            "event_time": "{}-{}".format(item.get("startFrom"), item.get("endTo")),
-            "available": item.get("state") == 0
-            and item.get("bookingOrderId") is None,
-        }
-        slots.append(slot)
-    return {
-        "facility_id": facility.get("id", preferred_facility_id),
-        "facility_name": facility.get("facilityName", "Tennis court"),
-        "maximum_selectable_slots": max(1, facility.get("multiSelectTime") or 1),
-        "slots": slots,
-    }
 
 
 class DooremiClient:
@@ -811,80 +666,6 @@ class DooremiClient:
         }
 
 
-def booking_payload(schedule):
-    return {
-        "eventDay": schedule["event_day"],
-        "bookingOrderFacilityList": [
-            {
-                "facilityId": schedule["facility_id"],
-                "eventTime": event_time,
-            }
-            for event_time in schedule_event_times(schedule)
-        ],
-    }
-
-
-def schedule_event_times(schedule):
-    event_times = schedule.get("event_times")
-    if isinstance(event_times, list) and event_times:
-        return list(dict.fromkeys(event_times))
-    value = schedule.get("event_time")
-    return [value] if value else []
-
-
-def normalized_event_day(value):
-    try:
-        return parse_event_day(value).isoformat()
-    except InputError:
-        pass
-    try:
-        return dt.datetime.strptime(value, "%a, %d/%m/%Y").date().isoformat()
-    except ValueError as error:
-        raise InputError("Dooremi returned an unreadable booking date.") from error
-
-
-def schedule_booking_targets(schedule):
-    raw_targets = schedule.get("booking_targets")
-    if not isinstance(raw_targets, list) or not raw_targets:
-        raw_targets = [
-            {
-                "event_day": schedule["event_day"],
-                "event_time": event_time,
-                "facility_id": schedule["facility_id"],
-            }
-            for event_time in schedule_event_times(schedule)
-        ]
-    targets = []
-    seen = set()
-    for target in raw_targets:
-        event_day = normalized_event_day(target["event_day"])
-        event_time = target["event_time"]
-        facility_id = int(target.get("facility_id") or schedule["facility_id"])
-        validate_event_time(event_time)
-        key = (event_day, event_time, facility_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        targets.append(
-            {
-                "event_day": event_day,
-                "event_time": event_time,
-                "facility_id": facility_id,
-            }
-        )
-    return targets
-
-
-def single_target_schedule(schedule, target):
-    single = dict(schedule)
-    single["event_day"] = target["event_day"]
-    single["event_time"] = target["event_time"]
-    single["event_times"] = [target["event_time"]]
-    single["facility_id"] = target["facility_id"]
-    single.pop("booking_targets", None)
-    return single
-
-
 def booking_clients(schedule, primary_client=None):
     targets = schedule_booking_targets(schedule)
     if not targets:
@@ -984,12 +765,9 @@ def submit_booking_requests(schedule, token, clients):
 
 
 def active_tennis_bookings(client, token):
-    return [
-        booking
-        for booking in client.booking_history(token, page_size=50)
-        if booking.get("status_name") == "Confirmed"
-        and "tennis" in booking.get("facility_name", "").casefold()
-    ]
+    return filter_active_tennis_bookings(
+        client.booking_history(token, page_size=50)
+    )
 
 
 def prepare_rebooking_batch(
@@ -1004,32 +782,21 @@ def prepare_rebooking_batch(
         if active_bookings is None
         else active_bookings
     )
-    targets = []
-    for booking in active_bookings:
-        for event_time in booking.get("event_times") or []:
-            targets.append(
-                {
-                    "event_day": normalized_event_day(booking["event_day"]),
-                    "event_time": event_time,
-                    "facility_id": schedule["facility_id"],
-                }
-            )
-    targets.extend(schedule_booking_targets(schedule))
-    batch_schedule = dict(schedule)
-    batch_schedule["booking_targets"] = targets
-    deduplicated = schedule_booking_targets(batch_schedule)
-    if len(deduplicated) > max_sessions:
-        raise InputError(
-            "{} active and selected sessions would be rebooked. "
-            "The safe maximum is {}. Nothing was cancelled.".format(
-                len(deduplicated), max_sessions
-            )
-        )
-    batch_schedule["booking_targets"] = deduplicated
+    batch_schedule = build_rebooking_batch(
+        schedule,
+        active_bookings,
+        max_sessions=max_sessions,
+    )
     return batch_schedule, active_bookings
 
 
-def cancel_active_tennis_bookings(bookings, token, client, attempts=3):
+def cancel_active_tennis_bookings(
+    bookings,
+    token,
+    client,
+    attempts=3,
+    timing_callback=None,
+):
     booking_ids = list(
         dict.fromkeys(
             int(booking["id"])
@@ -1038,17 +805,48 @@ def cancel_active_tennis_bookings(bookings, token, client, attempts=3):
         )
     )
     pending = set(booking_ids)
+    accepted = set()
     for attempt in range(1, attempts + 1):
         for booking_id in list(pending):
-            with contextlib.suppress(APIError):
+            if booking_id in accepted:
+                continue
+            started = time.monotonic()
+            try:
                 client.cancel_booking(booking_id, token)
+            except APIError as error:
+                if timing_callback:
+                    timing_callback(
+                        "cancel booking {} attempt {} failed in {}ms: {}".format(
+                            booking_id,
+                            attempt,
+                            round((time.monotonic() - started) * 1000),
+                            safe_message(error),
+                        )
+                    )
+            else:
+                accepted.add(booking_id)
+                if timing_callback:
+                    timing_callback(
+                        "cancel booking {} accepted in {}ms".format(
+                            booking_id,
+                            round((time.monotonic() - started) * 1000),
+                        )
+                    )
             time.sleep(0.15)
         time.sleep(0.2 * attempt)
+        verification_started = time.monotonic()
         confirmed_ids = {
             int(booking["id"])
             for booking in active_tennis_bookings(client, token)
             if booking.get("id") is not None
         }
+        if timing_callback:
+            timing_callback(
+                "cancellation verification attempt {} completed in {}ms".format(
+                    attempt,
+                    round((time.monotonic() - verification_started) * 1000),
+                )
+            )
         pending.intersection_update(confirmed_ids)
         if not pending:
             return booking_ids
@@ -1065,35 +863,14 @@ def cancel_active_tennis_bookings(bookings, token, client, attempts=3):
 
 
 def new_schedule(event_day, event_time, config, status="pending"):
-    event_times = (
-        list(dict.fromkeys(event_time))
-        if isinstance(event_time, (list, tuple))
-        else [event_time]
+    return build_schedule_record(
+        event_day,
+        event_time,
+        config,
+        schedule_id=uuid.uuid4().hex[:8],
+        created_at=now_sgt().isoformat(),
+        status=status,
     )
-    if not event_times or len(event_times) > config.max_sessions_per_booking:
-        raise InputError(
-            "Choose between 1 and {} sessions.".format(
-                config.max_sessions_per_booking
-            )
-        )
-    for value in event_times:
-        validate_event_time(value)
-    release = release_at(event_day, config)
-    return {
-        "id": uuid.uuid4().hex[:8],
-        "event_day": event_day,
-        "event_time": ", ".join(event_times),
-        "event_times": event_times,
-        "facility_id": config.facility_id,
-        "facility_category_id": config.facility_category_id,
-        "release_at": release.isoformat(),
-        "status": status,
-        "created_at": now_sgt().isoformat(),
-        "attempted_at": None,
-        "result_message": None,
-        "booking_order_id": None,
-        "booking_order_ids": [],
-    }
 
 
 class WakeScheduler:
@@ -1279,12 +1056,22 @@ class Executor:
         active_bookings = []
         try:
             token = self.keychain.load()
-            self._sleep_until(release - dt.timedelta(seconds=8))
+            self._sleep_until(
+                release - dt.timedelta(seconds=config.cancellation_lead_seconds)
+            )
+            preparation_started = time.monotonic()
             batch_schedule, active_bookings = prepare_rebooking_batch(
                 schedule,
                 token,
                 self.client,
                 max_sessions=config.max_sessions_per_booking,
+            )
+            self.store.append_log(
+                "[{}] rebooking discovery completed in {}ms; {} active booking(s)".format(
+                    schedule["id"],
+                    round((time.monotonic() - preparation_started) * 1000),
+                    len(active_bookings),
+                )
             )
             schedule["status"] = "running"
             schedule["attempted_at"] = now_sgt().isoformat()
@@ -1292,11 +1079,25 @@ class Executor:
                 batch_schedule
             )
             self.store.update_schedule(schedule)
+            clients = booking_clients(batch_schedule, self.client)
+            warmup_results = []
+            try:
+                results = warm_booking_clients(clients, token)
+                warmup_results.extend(result["elapsed_ms"] for result in results)
+            except BookerError as error:
+                self.store.append_log(
+                    "[{}] pre-cancellation warmup warning: {}".format(
+                        schedule["id"], safe_message(error)
+                    )
+                )
             if active_bookings:
                 cancelled_ids = cancel_active_tennis_bookings(
                     active_bookings,
                     token,
                     self.client,
+                    timing_callback=lambda message: self.store.append_log(
+                        "[{}] {}".format(schedule["id"], message)
+                    ),
                 )
                 self.store.append_log(
                     "[{}] cancelled and verified active booking IDs {}; "
@@ -1307,24 +1108,16 @@ class Executor:
                 )
                 schedule["cancelled_booking_ids"] = cancelled_ids
                 self.store.update_schedule(schedule)
-            clients = booking_clients(batch_schedule, self.client)
-            warmup_results = []
-            for seconds_before in (None, 3):
-                if seconds_before is not None:
-                    self._sleep_until(
-                        release - dt.timedelta(seconds=seconds_before)
+            self._sleep_until(release - dt.timedelta(seconds=3))
+            try:
+                results = warm_booking_clients(clients, token)
+                warmup_results.extend(result["elapsed_ms"] for result in results)
+            except BookerError as error:
+                self.store.append_log(
+                    "[{}] final warmup warning: {}".format(
+                        schedule["id"], safe_message(error)
                     )
-                try:
-                    results = warm_booking_clients(clients, token)
-                    warmup_results.extend(
-                        result["elapsed_ms"] for result in results
-                    )
-                except BookerError as error:
-                    self.store.append_log(
-                        "[{}] warmup warning: {}".format(
-                            schedule["id"], safe_message(error)
-                        )
-                    )
+                )
             if warmup_results:
                 self.store.append_log(
                     "[{}] booking connections ready; RTT samples {}ms".format(
@@ -2022,6 +1815,7 @@ class CLI:
             "release-hour": "release_hour",
             "release-minute": "release_minute",
             "wake-lead": "wake_lead_seconds",
+            "cancellation-lead": "cancellation_lead_seconds",
             "fire-delay": "fire_delay_milliseconds",
             "max-sessions": "max_sessions_per_booking",
         }
@@ -2053,6 +1847,11 @@ class CLI:
             )
         )
         print("  Wake lead         {} seconds".format(config.wake_lead_seconds))
+        print(
+            "  Cancellation lead {} seconds".format(
+                config.cancellation_lead_seconds
+            )
+        )
         print("  Fire delay        {} ms after noon".format(config.fire_delay_milliseconds))
         print("  Max sessions      {}".format(config.max_sessions_per_booking))
         UI.muted("No credentials are stored in this file.")

@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "timezone": "Asia/Singapore",
+  "timezoneOffset": "+08:00",
+  "api": {
+    "baseUrl": "https://api.dooremi.com.sg",
+    "userAgent": "LifeUp/1 CFNetwork/3860.600.12 Darwin/25.5.0",
+    "acceptLanguage": "en-SG,en-GB;q=0.9,en;q=0.8",
+    "timeoutMilliseconds": 12000,
+    "endpoints": {
+      "checkLogin": "/user/checkLogin",
+      "availability": "/user/booking/facilitySlot",
+      "preview": "/user/booking/orderPreview",
+      "createBooking": "/user/booking/createOrderV2",
+      "bookingHistory": "/user/booking/history",
+      "bookingDetail": "/user/booking/detail",
+      "cancelBooking": "/user/booking/cancel"
+    }
+  },
+  "defaults": {
+    "bookingLeadDays": 14,
+    "releaseHour": 12,
+    "releaseMinute": 0,
+    "armingWindowSeconds": 240,
+    "gracePeriodSeconds": 300,
+    "cancellationLeadSeconds": 15,
+    "fireDelayMilliseconds": 10,
+    "maximumSessions": 6
+  },
+  "hostedStrategy": {
+    "armingWindowSeconds": 240,
+    "gracePeriodSeconds": 300,
+    "minimumCancellationLeadSeconds": 90,
+    "externalWakeWindowSgt": "11:30-12:05"
+  },
+  "statuses": [
+    "pending",
+    "running",
+    "succeeded",
+    "partial",
+    "failed",
+    "missed",
+    "cancelled"
+  ]
+}

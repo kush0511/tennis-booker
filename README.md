@@ -3,7 +3,27 @@
 A local-first macOS terminal application for checking Dooremi tennis-court
 availability and scheduling up to six sessions at the facility release time.
 The default interface is a responsive full-screen TUI built for keyboard and
-mouse use.
+mouse use. The repository also contains **Court Signal**, a parallel,
+mobile-first ChatGPT Sites implementation.
+
+## Architecture
+
+The two runtimes deliberately share behavior without forcing the Sites worker
+to emulate macOS or the TUI to depend on a browser:
+
+- `tennis_core/` contains the reusable Python domain, validation, configuration,
+  payload, and rebooking rules used by the classic CLI and Textual TUI.
+- `shared/booking-contract.json` is the non-secret cross-runtime contract for
+  API paths, timing defaults, limits, and schedule statuses.
+- `site/lib/` is the Cloudflare-compatible TypeScript implementation of the
+  same booking and safety rules, protected by parity fixtures and tests.
+- `tennis_booker.py` retains the macOS adapters: Keychain, local JSON storage,
+  `launchd`, `pmset`, `caffeinate`, and the local executor.
+- `site/` contains the Sites UI, D1 persistence, Sign in with ChatGPT identity,
+  hosted-secret access, atomic schedule claims, and the signed runner endpoint.
+
+This keeps the TUI independently usable while allowing the hosted application
+to evolve in parallel.
 
 ## Safety model
 
@@ -116,8 +136,10 @@ For a future session the application:
 2. Installs a `pmset` hardware wake three minutes before release.
 3. Lets the `launchd` agent find and arm the job.
 4. Uses `caffeinate` to hold the Mac awake.
-5. Cancels and verifies active tennis bookings immediately before release.
-6. Primes one connection per preserved or newly selected session.
+5. Fifteen seconds before release, discovers active tennis bookings and primes
+   one connection per preserved or newly selected session.
+6. Cancels and verifies active tennis bookings, polling accepted cancellations
+   without resending them while Dooremi's history converges.
 7. Releases up to six independent single-slot requests together at the
    configured post-boundary delay.
 
@@ -152,6 +174,36 @@ uses Textual, installed into an isolated application virtual environment:
 /usr/bin/python3 -m unittest discover -s tests -v
 /usr/bin/python3 tennis_booker.py doctor
 ```
+
+The Sites implementation is developed and verified separately:
+
+```bash
+cd site
+npm ci
+npm test
+npm run lint
+```
+
+For local Sites development, copy `.env.example` to `.env.local`, configure
+non-production values, and run `npm run dev`. Production credentials must be
+added as hosted Sites secrets; never commit them or store them in D1.
+
+### Hosted scheduling boundary
+
+Court Signal includes the complete server-side runner and a signed
+`POST /api/automation/run-due` boundary. Its packaged Worker registers a
+once-per-minute Cron Trigger, writes a non-secret D1 heartbeat, and claims due
+plans with a lease so overlapping invocations cannot execute the same release
+twice. Local ScheduledEvent dispatch is verified, but the current ChatGPT Sites
+deployment accepts the artifact without installing the Cron Trigger: no
+production heartbeat appeared across multiple trigger boundaries. Hosted plans
+are now woken externally by two Google Cloud Scheduler jobs every minute from
+11:30 through 12:05 Singapore time. The signed runner still performs the exact
+release timing and D1 lease claiming; the macOS runner remains an independent
+fallback. The hosted runner uses a 60-second minimum cancellation budget and
+arms all due users concurrently; the local runner retains its 15-second
+strategy. The website does not label a release outside the external wake window
+as armed.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

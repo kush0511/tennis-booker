@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1783785947151,
+      "tag": "0000_mature_lady_bullseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1783786045309,
+      "tag": "0001_moaning_lady_vermin",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783787367235,
+      "tag": "0002_clear_sally_floyd",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783820972704,
+      "tag": "0003_large_vulcan",
+      "breakpoints": true
+    }
+  ]
+}
