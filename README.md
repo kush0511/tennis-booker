@@ -200,7 +200,7 @@ production heartbeat appeared across multiple trigger boundaries. Hosted plans
 are now woken externally by two Google Cloud Scheduler jobs every minute from
 11:30 through 12:05 Singapore time. The signed runner still performs the exact
 release timing and D1 lease claiming; the macOS runner remains an independent
-fallback. The hosted runner uses a 90-second minimum cancellation budget and
+fallback. The hosted runner uses a 60-second minimum cancellation budget and
 arms all due users concurrently; the local runner retains its 15-second
 strategy. The website does not label a release outside the external wake window
 as armed.

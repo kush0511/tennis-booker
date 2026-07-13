@@ -6,7 +6,7 @@ export const AUTOMATION_HEARTBEAT_ID = "runner";
 // cancellations within a pass are sent concurrently. Keep a safety margin for
 // Worker scheduling and D1 writes instead of inheriting the local Mac's 15s
 // lead, where connection behavior and latency are materially different.
-export const HOSTED_CANCELLATION_LEAD_SECONDS = 90;
+export const HOSTED_CANCELLATION_LEAD_SECONDS = 60;
 export const HOSTED_ARMING_WINDOW_SECONDS = 240;
 export const HOSTED_GRACE_PERIOD_SECONDS = 300;
 export const EXTERNAL_WAKE_START_MINUTE_SGT = 11 * 60 + 30;

@@ -40,7 +40,7 @@ sanitized events. A composite slot key prevents overlapping active schedules,
 and a lease-based claim prevents two runner invocations from executing the same
 plan.
 
-Hosted execution begins at least 90 seconds before release, sends distinct
+Hosted execution begins at least 60 seconds before release, sends distinct
 booking cancellations with a small concurrent stagger, verifies history, then
 re-warms all replacement connections at T-3 seconds. Due plans execute in
 parallel so one user's release wait cannot delay another user's plan. The
