@@ -29,6 +29,13 @@
       "when": 1783820972704,
       "tag": "0003_large_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785903248721,
+      "tag": "0004_curious_archangel",
+      "breakpoints": true
     }
   ]
 }

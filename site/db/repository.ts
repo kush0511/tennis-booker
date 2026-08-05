@@ -164,6 +164,10 @@ export function ensureSchema(): Promise<void> {
         scheduled_at TEXT NOT NULL,
         cron TEXT NOT NULL
       )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS schedule_failure_exports (
+        schedule_id TEXT PRIMARY KEY,
+        exported_at TEXT NOT NULL
+      )`),
     ])
     .then(() => undefined)
     .catch((error) => {
@@ -313,6 +317,36 @@ export async function listSchedules(
     .bind(userEmail, limit)
     .all<ScheduleRow>();
   return result.results.map(fromScheduleRow);
+}
+
+export async function listUnreportedScheduleFailures(
+  limit = 20,
+): Promise<StoredSchedule[]> {
+  await ensureSchema();
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("Failure export limit must be between 1 and 100.");
+  }
+  const result = await database()
+    .prepare(`SELECT schedules.* FROM schedules
+      LEFT JOIN schedule_failure_exports
+        ON schedule_failure_exports.schedule_id = schedules.id
+      WHERE schedules.status IN ('failed', 'partial', 'missed')
+        AND schedule_failure_exports.schedule_id IS NULL
+      ORDER BY schedules.updated_at DESC
+      LIMIT ?`)
+    .bind(limit)
+    .all<ScheduleRow>();
+  return result.results.map(fromScheduleRow);
+}
+
+export async function markScheduleFailureReported(id: string): Promise<void> {
+  await ensureSchema();
+  await database()
+    .prepare(`INSERT OR IGNORE INTO schedule_failure_exports (
+      schedule_id, exported_at
+    ) VALUES (?, ?)`)
+    .bind(id, new Date().toISOString())
+    .run();
 }
 
 export async function getSchedule(

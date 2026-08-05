@@ -2,7 +2,9 @@ import { getRuntimeEnv } from "@/db";
 import {
   claimSchedule,
   getSettings,
+  listUnreportedScheduleFailures,
   listDueSchedules,
+  markScheduleFailureReported,
   recordAutomationHeartbeat,
 } from "@/db/repository";
 import { data, HttpError, routeError } from "@/app/_server/api";
@@ -11,6 +13,36 @@ import { HOSTED_ARMING_WINDOW_SECONDS } from "@/lib/automation";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+async function exportUnreportedFailures(): Promise<void> {
+  try {
+    const failures = await listUnreportedScheduleFailures();
+    for (const failure of failures) {
+      console.error(
+        "Court Signal schedule failure",
+        JSON.stringify({
+          scheduleId: failure.id,
+          status: failure.status,
+          eventDay: failure.eventDay,
+          eventTimes: failure.eventTimes,
+          releaseAt: failure.releaseAt,
+          attemptedAt: failure.attemptedAt,
+          resultMessage: failure.resultMessage,
+          bookingOrderIds: failure.bookingOrderIds,
+          cancelledBookingIds: failure.cancelledBookingIds,
+          submitSkewMs: failure.submitSkewMs,
+          updatedAt: failure.updatedAt,
+        }),
+      );
+      await markScheduleFailureReported(failure.id);
+    }
+  } catch (error) {
+    console.error(
+      "Court Signal could not export schedule diagnostics",
+      error instanceof Error ? error.message : "Unknown diagnostics error.",
+    );
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -31,6 +63,7 @@ export async function POST(request: Request) {
       scheduledAt,
       cron: "Google Cloud Scheduler",
     });
+    await exportUnreportedFailures();
     const due = await listDueSchedules(now, HOSTED_ARMING_WINDOW_SECONDS);
     // Every plan for the same release boundary must arm independently. A
     // sequential loop lets the first user sleep until release while every later
@@ -57,6 +90,7 @@ export async function POST(request: Request) {
         }),
       )
     ).filter((result) => result !== null);
+    await exportUnreportedFailures();
     return data({ checkedAt: now, schedules: results });
   } catch (error) {
     return routeError(error);

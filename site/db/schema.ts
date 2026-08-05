@@ -110,3 +110,8 @@ export const automationHeartbeat = sqliteTable("automation_heartbeat", {
   scheduledAt: text("scheduled_at").notNull(),
   cron: text("cron").notNull(),
 });
+
+export const scheduleFailureExports = sqliteTable("schedule_failure_exports", {
+  scheduleId: text("schedule_id").primaryKey(),
+  exportedAt: text("exported_at").notNull(),
+});
