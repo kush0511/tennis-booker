@@ -197,13 +197,13 @@ plans with a lease so overlapping invocations cannot execute the same release
 twice. Local ScheduledEvent dispatch is verified, but the current ChatGPT Sites
 deployment accepts the artifact without installing the Cron Trigger: no
 production heartbeat appeared across multiple trigger boundaries. Hosted plans
-are now woken externally by two Google Cloud Scheduler jobs every minute from
-11:30 through 12:05 Singapore time. The signed runner still performs the exact
-release timing and D1 lease claiming; the macOS runner remains an independent
-fallback. The hosted runner uses a 60-second minimum cancellation budget and
-arms all due users concurrently; the local runner retains its 15-second
-strategy. The website does not label a release outside the external wake window
-as armed.
+are now woken externally by Google Cloud Scheduler every minute. The signed
+runner still performs the exact release timing and D1 lease claiming; the macOS
+runner remains an independent fallback. The hosted runner prepares at T-60 but
+waits until the configured T-15 boundary to cancel, compensates transmission
+time from the final warmup RTT, and retries one explicit Dooremi rejection while
+never retrying an ambiguous submission. All due users arm concurrently. The
+website does not label a release outside the external wake window as armed.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

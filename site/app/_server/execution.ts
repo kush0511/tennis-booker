@@ -9,7 +9,13 @@ import {
   type BookingTransactionResult,
 } from "@/lib/transaction";
 import { safeErrorMessage } from "@/lib/dooremi";
-import { effectiveHostedCancellationLead } from "@/lib/automation";
+import {
+  effectiveHostedPreparationLead,
+  HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+  HOSTED_REJECTED_SUBMISSION_RETRIES,
+  HOSTED_REJECTED_SUBMISSION_RETRY_DELAY_MILLISECONDS,
+  HOSTED_REJECTED_SUBMISSION_RETRY_STAGGER_MILLISECONDS,
+} from "@/lib/automation";
 
 export type ExecutionResult = {
   status: "succeeded" | "partial" | "failed" | "missed";
@@ -95,7 +101,7 @@ export async function executeStoredSchedule(
     return result;
   }
 
-  const preparationLeadSeconds = effectiveHostedCancellationLead(
+  const preparationLeadSeconds = effectiveHostedPreparationLead(
     config.cancellationLeadSeconds,
   );
   const preparationAt = release.valueOf() - preparationLeadSeconds * 1_000;
@@ -112,15 +118,26 @@ export async function executeStoredSchedule(
     void appendScheduleEvent(stored.id, stored.userEmail, "info", message);
   };
   timing(
-    `hosted preparation started at T-${preparationLeadSeconds}s; configured local lead is ${config.cancellationLeadSeconds}s`,
+    `hosted preparation started at T-${preparationLeadSeconds}s; cancellation remains at T-${config.cancellationLeadSeconds}s`,
   );
 
   try {
     const result = await executeBookingTransaction(dooremiClient(), schedule, {
       maxSessions: config.maxSessionsPerBooking,
       warmupPasses: 2,
+      cancelAt: new Date(
+        release.valueOf() - config.cancellationLeadSeconds * 1_000,
+      ),
       secondWarmupAt: new Date(release.valueOf() - 3_000),
-      fireAt: new Date(release.valueOf() + config.fireDelayMilliseconds),
+      releaseAt: release,
+      fireDelayMilliseconds: config.fireDelayMilliseconds,
+      maximumTransmissionLeadMilliseconds:
+        HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+      rejectedSubmissionRetries: HOSTED_REJECTED_SUBMISSION_RETRIES,
+      rejectedSubmissionRetryDelayMilliseconds:
+        HOSTED_REJECTED_SUBMISSION_RETRY_DELAY_MILLISECONDS,
+      rejectedSubmissionRetryStaggerMilliseconds:
+        HOSTED_REJECTED_SUBMISSION_RETRY_STAGGER_MILLISECONDS,
       onTiming: timing,
     });
     const completed = successfulResult(result);
@@ -164,10 +181,17 @@ export async function executeStoredSchedule(
       error instanceof RebookingSubmissionError
         ? error.cancelledBookingIds
         : [];
+    const failedTargets =
+      error instanceof RebookingSubmissionError ? error.bookingTargets : [];
+    const submitSkewMs =
+      error instanceof RebookingSubmissionError ? error.submitSkewMs : null;
     await finishSchedule(stored.id, {
       status: "failed",
       resultMessage: message,
+      preparedTargets: failedTargets,
+      submittedTargets: failedTargets,
       cancelledBookingIds,
+      submitSkewMs,
     });
     await appendScheduleEvent(stored.id, stored.userEmail, "error", message);
     if (error instanceof CancellationError) {

@@ -40,11 +40,15 @@ sanitized events. A composite slot key prevents overlapping active schedules,
 and a lease-based claim prevents two runner invocations from executing the same
 plan.
 
-Hosted execution begins at least 60 seconds before release, sends distinct
-booking cancellations with a small concurrent stagger, verifies history, then
-re-warms all replacement connections at T-3 seconds. Due plans execute in
-parallel so one user's release wait cannot delay another user's plan. The
-15-second local value is not treated as a sufficient hosted timeout budget.
+Hosted execution claims and warms each transaction at least 60 seconds before
+release, but does not expose existing bookings for that full preparation
+window. It waits until the configured T-15-second cancellation boundary, sends
+distinct cancellations with a small concurrent stagger, verifies history, then
+re-warms all replacement connections at T-3 seconds. The final warmup RTT
+compensates up to 40 milliseconds of network transit so requests reach Dooremi
+at the configured release offset. One explicit JSON rejection is retried with a
+small stagger; ambiguous submissions are never retried. Due plans execute in
+parallel so one user's release wait cannot delay another user's plan.
 
 The Worker exports a scheduled handler and the application exposes
 `POST /api/automation/run-due`, authenticated with `AUTOMATION_SECRET`. The

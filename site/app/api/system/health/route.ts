@@ -2,8 +2,10 @@ import { data, requireApiUser, routeError } from "@/app/_server/api";
 import { getRuntimeEnv } from "@/db";
 import { getAutomationHeartbeat, getSettings } from "@/db/repository";
 import {
-  effectiveHostedCancellationLead,
+  effectiveHostedPreparationLead,
   externalWakeCoversRelease,
+  HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+  HOSTED_REJECTED_SUBMISSION_RETRIES,
 } from "@/lib/automation";
 
 export const dynamic = "force-dynamic";
@@ -35,10 +37,14 @@ export async function GET() {
         leadDays: settings.bookingLeadDays,
         hour: settings.releaseHour,
         minute: settings.releaseMinute,
-        preparationSeconds: effectiveHostedCancellationLead(
+        preparationSeconds: effectiveHostedPreparationLead(
           settings.cancellationLeadSeconds,
         ),
+        cancellationSeconds: settings.cancellationLeadSeconds,
         fireDelayMilliseconds: settings.fireDelayMilliseconds,
+        maximumTransmissionLeadMilliseconds:
+          HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+        rejectedSubmissionRetries: HOSTED_REJECTED_SUBMISSION_RETRIES,
       },
     });
   } catch (error) {

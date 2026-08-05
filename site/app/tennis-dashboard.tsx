@@ -61,7 +61,10 @@ type SystemHealth = {
     hour: number;
     minute: number;
     preparationSeconds: number;
+    cancellationSeconds: number;
     fireDelayMilliseconds: number;
+    maximumTransmissionLeadMilliseconds: number;
+    rejectedSubmissionRetries: number;
   };
 };
 
@@ -1002,7 +1005,7 @@ export function TennisDashboard({
               {String(systemHealth?.releaseTiming.minute ?? settings.releaseMinute).padStart(2, "0")} SGT
             </strong>
             <p>
-              {systemHealth?.releaseTiming.leadDays ?? settings.bookingLeadDays} days before play · prepares replacements {systemHealth?.releaseTiming.preparationSeconds ?? settings.cancellationLeadSeconds}s before release · fires {systemHealth?.releaseTiming.fireDelayMilliseconds ?? settings.fireDelayMilliseconds}ms after.
+              {systemHealth?.releaseTiming.leadDays ?? settings.bookingLeadDays} days before play · prepares {systemHealth?.releaseTiming.preparationSeconds ?? 60}s before release · cancels only {systemHealth?.releaseTiming.cancellationSeconds ?? settings.cancellationLeadSeconds}s before · targets server arrival {systemHealth?.releaseTiming.fireDelayMilliseconds ?? settings.fireDelayMilliseconds}ms after release with up to {systemHealth?.releaseTiming.maximumTransmissionLeadMilliseconds ?? 40}ms network compensation.
             </p>
           </section>
 

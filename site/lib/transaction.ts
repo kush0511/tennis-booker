@@ -73,13 +73,31 @@ export class PartialBookingError extends Error {
 
 export class RebookingSubmissionError extends Error {
   readonly cancelledBookingIds: number[];
+  readonly failures: FailedSubmission[];
+  readonly submitSkewMs: number;
 
-  constructor(cancelledBookingIds: readonly number[], cause: unknown) {
+  constructor(
+    cancelledBookingIds: readonly number[],
+    failures: readonly FailedSubmission[],
+    submitSkewMs: number,
+  ) {
+    const targets = failures
+      .map((failure) => `${failure.target.eventDay} ${failure.target.eventTime}`)
+      .join(", ");
+    const reasons = [
+      ...new Set(failures.map((failure) => safeErrorMessage(failure.error))),
+    ].join("; ");
     super(
-      `Active bookings were cancelled, but no replacement request was confirmed: ${safeErrorMessage(cause)} Refresh booking history now.`,
+      `Active bookings were cancelled, but no replacement request was confirmed. ${failures.length} request${failures.length === 1 ? "" : "s"} failed for ${targets}: ${reasons} Refresh booking history now.`,
     );
     this.name = "RebookingSubmissionError";
     this.cancelledBookingIds = [...cancelledBookingIds];
+    this.failures = [...failures];
+    this.submitSkewMs = submitSkewMs;
+  }
+
+  get bookingTargets(): BookingTarget[] {
+    return this.failures.map((failure) => failure.target);
   }
 }
 
@@ -234,9 +252,19 @@ export interface ExecuteBookingTransactionOptions {
   maxSessions?: number;
   /** One pass matches immediate execution; two matches the scheduled runner. */
   warmupPasses?: 1 | 2;
+  /** Keep early preparation separate from the narrow destructive window. */
+  cancelAt?: Date;
   /** Scheduled runners use release minus three seconds for the second pass. */
   secondWarmupAt?: Date;
   fireAt?: Date;
+  /** Compensate transmission time so the request reaches Dooremi at release. */
+  releaseAt?: Date;
+  fireDelayMilliseconds?: number;
+  maximumTransmissionLeadMilliseconds?: number;
+  /** Retry only explicit JSON rejections, never ambiguous submissions. */
+  rejectedSubmissionRetries?: number;
+  rejectedSubmissionRetryDelayMilliseconds?: number;
+  rejectedSubmissionRetryStaggerMilliseconds?: number;
   now?: () => Date;
   sleep?: Sleep;
   monotonicNow?: () => number;
@@ -306,12 +334,132 @@ function toError(error: unknown): Error {
     : new Error(safeErrorMessage(error) || "Unexpected booking error");
 }
 
+export type CompensatedSubmissionTiming = {
+  fireAt: Date;
+  medianRoundTripMilliseconds: number | null;
+  transmissionLeadMilliseconds: number;
+};
+
+export function compensatedSubmissionTiming(
+  releaseAt: Date,
+  fireDelayMilliseconds: number,
+  roundTripSamples: readonly number[],
+  maximumTransmissionLeadMilliseconds = 40,
+): CompensatedSubmissionTiming {
+  if (
+    !Number.isFinite(releaseAt.valueOf()) ||
+    !Number.isFinite(fireDelayMilliseconds) ||
+    fireDelayMilliseconds < 0 ||
+    !Number.isFinite(maximumTransmissionLeadMilliseconds) ||
+    maximumTransmissionLeadMilliseconds < 0
+  ) {
+    throw new DomainError("The compensated submission timing is invalid.");
+  }
+  const samples = roundTripSamples
+    .filter((sample) => Number.isFinite(sample) && sample >= 0)
+    .sort((left, right) => left - right);
+  const midpoint = Math.floor(samples.length / 2);
+  const median = samples.length
+    ? samples.length % 2 === 0
+      ? (samples[midpoint - 1] + samples[midpoint]) / 2
+      : samples[midpoint]
+    : null;
+  const transmissionLeadMilliseconds =
+    median === null
+      ? 0
+      : Math.min(
+          maximumTransmissionLeadMilliseconds,
+          Math.max(0, Math.round(median / 2)),
+        );
+  return {
+    fireAt: new Date(
+      releaseAt.valueOf() +
+        fireDelayMilliseconds -
+        transmissionLeadMilliseconds,
+    ),
+    medianRoundTripMilliseconds: median,
+    transmissionLeadMilliseconds,
+  };
+}
+
+async function createSingleBookingWithSafeRetry(
+  client: BookingTransactionClient,
+  schedule: Schedule,
+  target: BookingTarget,
+  targetIndex: number,
+  options: {
+    retries: number;
+    retryDelayMilliseconds: number;
+    retryStaggerMilliseconds: number;
+    sleep: Sleep;
+    onTiming?: (message: string) => void;
+  },
+): Promise<SingleBookingResult> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.createSingleBooking(
+        singleTargetSchedule(schedule, target),
+      );
+    } catch (error) {
+      const normalized = toError(error);
+      if (
+        !(normalized instanceof DooremiError) ||
+        normalized.code !== "rejected" ||
+        attempt >= options.retries
+      ) {
+        throw normalized;
+      }
+      const delay =
+        options.retryDelayMilliseconds +
+        targetIndex * options.retryStaggerMilliseconds;
+      options.onTiming?.(
+        `explicit rejection for ${target.eventDay} ${target.eventTime}; safe retry ${attempt + 1} in ${delay}ms`,
+      );
+      if (delay > 0) await options.sleep(delay);
+    }
+  }
+}
+
 export async function executeBookingTransaction(
   client: BookingTransactionClient,
   schedule: Schedule,
   options: ExecuteBookingTransactionOptions = {},
 ): Promise<BookingTransactionResult> {
   const maxSessions = options.maxSessions ?? MAX_BOOKING_TARGETS;
+  const rejectedSubmissionRetries = options.rejectedSubmissionRetries ?? 0;
+  const rejectedSubmissionRetryDelayMilliseconds =
+    options.rejectedSubmissionRetryDelayMilliseconds ?? 60;
+  const rejectedSubmissionRetryStaggerMilliseconds =
+    options.rejectedSubmissionRetryStaggerMilliseconds ?? 10;
+  if (
+    !Number.isSafeInteger(rejectedSubmissionRetries) ||
+    rejectedSubmissionRetries < 0 ||
+    rejectedSubmissionRetries > 2 ||
+    !Number.isFinite(rejectedSubmissionRetryDelayMilliseconds) ||
+    rejectedSubmissionRetryDelayMilliseconds < 0 ||
+    !Number.isFinite(rejectedSubmissionRetryStaggerMilliseconds) ||
+    rejectedSubmissionRetryStaggerMilliseconds < 0
+  ) {
+    throw new DomainError("The safe submission retry configuration is invalid.");
+  }
+  for (const executionTime of [
+    options.cancelAt,
+    options.secondWarmupAt,
+    options.fireAt,
+    options.releaseAt,
+  ]) {
+    if (executionTime && !Number.isFinite(executionTime.valueOf())) {
+      throw new DomainError("The requested execution time is invalid.");
+    }
+  }
+  if (options.releaseAt) {
+    compensatedSubmissionTiming(
+      options.releaseAt,
+      options.fireDelayMilliseconds ?? 0,
+      [],
+      options.maximumTransmissionLeadMilliseconds,
+    );
+  }
   const history =
     options.activeBookings ??
     activeTennisBookings(await client.bookingHistory({ pageSize: 50 }));
@@ -321,34 +469,59 @@ export async function executeBookingTransaction(
   const clients = clientsForTargets(client, prepared.bookingTargets.length);
   const warmupElapsedMs: number[] = [];
 
-  warmupElapsedMs.push(
-    ...(await warmClients(clients, 1, options.onTiming)),
+  const firstWarmupElapsedMs = await warmClients(
+    clients,
+    1,
+    options.onTiming,
   );
+  warmupElapsedMs.push(...firstWarmupElapsedMs);
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? (() => new Date());
+  if (active.length && options.cancelAt) {
+    await sleepUntil(options.cancelAt, now, sleep);
+    options.onTiming?.("configured cancellation window opened");
+  }
   const cancelledBookingIds = active.length
     ? await cancelActiveTennisBookings(client, active, {
-        sleep: options.sleep,
+        sleep,
         monotonicNow: options.monotonicNow,
         onTiming: options.onTiming,
       })
     : [];
 
   const warmupPasses = options.warmupPasses ?? 1;
+  let latestWarmupElapsedMs = firstWarmupElapsedMs;
   if (warmupPasses === 2) {
     if (options.secondWarmupAt) {
-      await sleepUntil(
-        options.secondWarmupAt,
-        options.now ?? (() => new Date()),
-        options.sleep ?? defaultSleep,
-      );
+      await sleepUntil(options.secondWarmupAt, now, sleep);
     }
-    warmupElapsedMs.push(
-      ...(await warmClients(clients, 2, options.onTiming)),
+    const secondWarmupElapsedMs = await warmClients(
+      clients,
+      2,
+      options.onTiming,
     );
+    warmupElapsedMs.push(...secondWarmupElapsedMs);
+    if (secondWarmupElapsedMs.length > 0) {
+      latestWarmupElapsedMs = secondWarmupElapsedMs;
+    }
   }
 
-  const sleep = options.sleep ?? defaultSleep;
-  if (options.fireAt) {
-    await sleepUntil(options.fireAt, options.now ?? (() => new Date()), sleep);
+  let fireAt = options.fireAt;
+  if (options.releaseAt) {
+    const compensated = compensatedSubmissionTiming(
+      options.releaseAt,
+      options.fireDelayMilliseconds ?? 0,
+      latestWarmupElapsedMs,
+      options.maximumTransmissionLeadMilliseconds,
+    );
+    fireAt = compensated.fireAt;
+    const offset = fireAt.valueOf() - options.releaseAt.valueOf();
+    options.onTiming?.(
+      `submission transmit scheduled at T${offset >= 0 ? "+" : ""}${offset}ms using ${compensated.medianRoundTripMilliseconds ?? "no"}ms median warmup RTT`,
+    );
+  }
+  if (fireAt) {
+    await sleepUntil(fireAt, now, sleep);
   }
 
   const monotonicNow = options.monotonicNow ?? defaultMonotonicNow;
@@ -356,8 +529,20 @@ export async function executeBookingTransaction(
     prepared.bookingTargets.map(async (target, index) => {
       const startedMs = monotonicNow();
       try {
-        const result = await clients[index].createSingleBooking(
-          singleTargetSchedule(prepared.schedule, target),
+        const result = await createSingleBookingWithSafeRetry(
+          clients[index],
+          prepared.schedule,
+          target,
+          index,
+          {
+            retries: rejectedSubmissionRetries,
+            retryDelayMilliseconds:
+              rejectedSubmissionRetryDelayMilliseconds,
+            retryStaggerMilliseconds:
+              rejectedSubmissionRetryStaggerMilliseconds,
+            sleep,
+            onTiming: options.onTiming,
+          },
         );
         return {
           ok: true as const,
@@ -400,7 +585,8 @@ export async function executeBookingTransaction(
     if (cancelledBookingIds.length > 0) {
       throw new RebookingSubmissionError(
         cancelledBookingIds,
-        failures[0].error,
+        failures,
+        submitSkewMs,
       );
     }
     throw failures[0].error;

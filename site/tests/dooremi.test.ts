@@ -7,6 +7,7 @@ import {
   AuthenticationError,
   DOOREMI_IOS_USER_AGENT,
   DooremiClient,
+  DooremiError,
   safeErrorMessage,
   type FetchLike,
 } from "../lib/dooremi.js";
@@ -112,6 +113,23 @@ test("unreadable create responses are explicitly ambiguous", async () => {
       facilityId: 9001,
     }),
     AmbiguousSubmissionError,
+  );
+});
+
+test("a nonzero JSON status is an explicit rejection that can be retried safely", async () => {
+  const client = new DooremiClient({
+    token: "hosted-secret-value",
+    fetch: async () =>
+      jsonResponse({ status: 1, msg: "Unexpected error", content: null }),
+  });
+  await assert.rejects(
+    client.createSingleBooking({
+      eventDay: "2026-07-17",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    }),
+    (error: unknown) =>
+      error instanceof DooremiError && error.code === "rejected",
   );
 });
 

@@ -30,7 +30,10 @@
   "hostedStrategy": {
     "armingWindowSeconds": 240,
     "gracePeriodSeconds": 300,
-    "minimumCancellationLeadSeconds": 90,
+    "preparationLeadSeconds": 60,
+    "cancellationLeadSeconds": 15,
+    "maximumTransmissionLeadMilliseconds": 40,
+    "rejectedSubmissionRetries": 1,
     "externalWakeWindowSgt": "11:30-12:05"
   },
   "statuses": [

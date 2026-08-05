@@ -16,6 +16,7 @@ import {
   PartialBookingError,
   RebookingSubmissionError,
   cancelActiveTennisBookings,
+  compensatedSubmissionTiming,
   executeBookingTransaction,
   prepareRebookingBatch,
   type BookingTransactionClient,
@@ -182,6 +183,7 @@ class TransactionFake implements BookingTransactionClient {
   readonly submitted: Schedule[] = [];
   readonly active = new Map<number, BookingRecord>();
   readonly failTimes = new Set<string>();
+  readonly rejectedAttempts = new Map<string, number>();
   nextOrderId = 900;
 
   async warmup(): Promise<WarmupResult> {
@@ -204,6 +206,14 @@ class TransactionFake implements BookingTransactionClient {
     const time = schedule.eventTimes?.[0] ?? "";
     this.timeline.push(`create:${time}`);
     this.submitted.push(schedule);
+    const remainingRejections = this.rejectedAttempts.get(time) ?? 0;
+    if (remainingRejections > 0) {
+      this.rejectedAttempts.set(time, remainingRejections - 1);
+      throw new DooremiError(
+        "Dooremi rejected the request (1): Unexpected error",
+        "rejected",
+      );
+    }
     if (this.failTimes.has(time)) {
       throw new AmbiguousSubmissionError();
     }
@@ -290,6 +300,76 @@ test("scheduled timing waits for T-3 before the second warmup and then for fireA
   ]);
 });
 
+test("hosted cancellation waits for the narrow destructive window", async () => {
+  const client = new TransactionFake();
+  client.active.set(501, confirmedBooking(501));
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  let current = release.valueOf() - 60_000;
+  const sleeps: number[] = [];
+  await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [...client.active.values()],
+      warmupPasses: 2,
+      cancelAt: new Date(release.valueOf() - 15_000),
+      secondWarmupAt: new Date(release.valueOf() - 3_000),
+      fireAt: release,
+      now: () => new Date(current),
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        current += milliseconds;
+      },
+    },
+  );
+  assert.deepEqual(sleeps, [45_000, 200, 11_800, 3_000]);
+  assert.ok(
+    client.timeline.indexOf("cancel:501") > client.timeline.indexOf("warm"),
+  );
+});
+
+test("submission timing compensates measured transit with a bounded lead", () => {
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  const timing = compensatedSubmissionTiming(
+    release,
+    10,
+    [80, 100, 120],
+    40,
+  );
+  assert.equal(timing.medianRoundTripMilliseconds, 100);
+  assert.equal(timing.transmissionLeadMilliseconds, 40);
+  assert.equal(timing.fireAt.valueOf(), release.valueOf() - 30);
+});
+
+test("an explicit rejection is retried once with a safe stagger", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 1);
+  const sleeps: number[] = [];
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      rejectedSubmissionRetries: 1,
+      rejectedSubmissionRetryDelayMilliseconds: 60,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      },
+    },
+  );
+  assert.equal(result.bookingOrderIds.length, 1);
+  assert.deepEqual(sleeps, [60]);
+  assert.equal(client.submitted.length, 2);
+});
+
 test("a partial result records successes and never retries an ambiguous target", async () => {
   const client = new TransactionFake();
   client.failTimes.add("08:00-09:00");
@@ -306,6 +386,7 @@ test("a partial result records successes and never retries an ambiguous target",
         activeBookings: [],
         sleep: noSleep,
         warmupPasses: 1,
+        rejectedSubmissionRetries: 1,
       },
     );
   } catch (error) {
@@ -324,8 +405,9 @@ test("complete submission failure after cancellation raises the recovery warning
   client.active.set(501, confirmedBooking(501));
   client.failTimes.add("07:00-08:00");
   client.failTimes.add("19:00-20:00");
-  await assert.rejects(
-    executeBookingTransaction(
+  let caught: unknown;
+  try {
+    await executeBookingTransaction(
       client,
       {
         eventDay: "2026-07-18",
@@ -337,8 +419,15 @@ test("complete submission failure after cancellation raises the recovery warning
         sleep: noSleep,
         warmupPasses: 1,
       },
-    ),
-    RebookingSubmissionError,
+    );
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof RebookingSubmissionError);
+  assert.equal(caught.failures.length, 2);
+  assert.deepEqual(
+    caught.bookingTargets.map((target) => target.eventTime),
+    ["07:00-08:00", "19:00-20:00"],
   );
   assert.equal(
     client.submitted.filter(

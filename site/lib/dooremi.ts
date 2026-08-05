@@ -28,6 +28,7 @@ export type DooremiErrorCode =
   | "timeout"
   | "connectivity"
   | "rate_limit"
+  | "rejected"
   | "api"
   | "ambiguous_submission";
 
@@ -470,6 +471,7 @@ export class DooremiClient {
         if (isAuthenticationMessage(message)) throw new AuthenticationError();
         throw new DooremiError(
           `Dooremi rejected the request (${String(root.status)}): ${message}`,
+          "rejected",
         );
       }
       return { payload: root, headers: response.headers, elapsedMs };
