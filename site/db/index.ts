@@ -9,7 +9,6 @@ export type TennisRuntimeEnv = {
   DOOREMI_CATEGORY_ID?: string;
   AUTOMATION_SECRET?: string;
   AUTOMATION_TRIGGER_ENABLED?: string;
-  DIAGNOSTIC_SECRET?: string;
 };
 
 export function getRuntimeEnv(): TennisRuntimeEnv {

@@ -339,23 +339,6 @@ export async function listUnreportedScheduleFailures(
   return result.results.map(fromScheduleRow);
 }
 
-export async function listRecentScheduleFailures(
-  limit = 20,
-): Promise<StoredSchedule[]> {
-  await ensureSchema();
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new Error("Failure diagnostics limit must be between 1 and 100.");
-  }
-  const result = await database()
-    .prepare(`SELECT * FROM schedules
-      WHERE status IN ('failed', 'partial', 'missed')
-      ORDER BY updated_at DESC
-      LIMIT ?`)
-    .bind(limit)
-    .all<ScheduleRow>();
-  return result.results.map(fromScheduleRow);
-}
-
 export async function markScheduleFailureReported(id: string): Promise<void> {
   await ensureSchema();
   await database()
@@ -528,35 +511,6 @@ export async function listScheduleEvents(
       ORDER BY created_at DESC
       LIMIT ?`)
     .bind(scheduleId, userEmail, limit)
-    .all<{
-      id: number;
-      level: "info" | "warning" | "error";
-      message: string;
-      created_at: string;
-    }>();
-  return result.results.map((event) => ({
-    id: event.id,
-    level: event.level,
-    message: event.message,
-    createdAt: event.created_at,
-  }));
-}
-
-export async function listScheduleEventsForDiagnostics(
-  scheduleId: string,
-  limit = 40,
-): Promise<ScheduleEvent[]> {
-  await ensureSchema();
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new Error("Schedule event diagnostics limit must be between 1 and 100.");
-  }
-  const result = await database()
-    .prepare(`SELECT id, level, message, created_at
-      FROM schedule_events
-      WHERE schedule_id = ?
-      ORDER BY created_at DESC
-      LIMIT ?`)
-    .bind(scheduleId, limit)
     .all<{
       id: number;
       level: "info" | "warning" | "error";
