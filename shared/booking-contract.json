@@ -32,8 +32,15 @@
     "gracePeriodSeconds": 300,
     "preparationLeadSeconds": 60,
     "cancellationLeadSeconds": 15,
-    "maximumTransmissionLeadMilliseconds": 40,
-    "rejectedSubmissionRetries": 1,
+    "preCancellationProbeCount": 3,
+    "preCancellationMinimumSuccesses": 2,
+    "latencyProbeCount": 5,
+    "latencyPercentile": 0.75,
+    "minimumLatencySamples": 5,
+    "fallbackRoundTripMilliseconds": 120,
+    "maximumTransmissionLeadMilliseconds": 250,
+    "rejectedSubmissionRetryDelaysMilliseconds": [40, 90, 200, 450],
+    "ambiguousReconciliationDelaysMilliseconds": [0, 250, 750, 1500],
     "externalWakeWindowSgt": "11:30-12:05"
   },
   "statuses": [

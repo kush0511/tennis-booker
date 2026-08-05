@@ -30,6 +30,20 @@ export class CancellationError extends Error {
   }
 }
 
+export class LatencyPreflightError extends Error {
+  readonly successfulProbes: number;
+  readonly requiredProbes: number;
+
+  constructor(successfulProbes: number, requiredProbes: number) {
+    super(
+      `Only ${successfulProbes} latency probe${successfulProbes === 1 ? "" : "s"} succeeded immediately before cancellation; ${requiredProbes} were required. No existing bookings were cancelled.`,
+    );
+    this.name = "LatencyPreflightError";
+    this.successfulProbes = successfulProbes;
+    this.requiredProbes = requiredProbes;
+  }
+}
+
 export interface ConfirmedSubmission {
   target: BookingTarget;
   result: SingleBookingResult;
@@ -102,7 +116,7 @@ export class RebookingSubmissionError extends Error {
 }
 
 export interface BookingTransactionClient {
-  warmup(): Promise<WarmupResult>;
+  warmup(options?: { timeoutMs?: number }): Promise<WarmupResult>;
   bookingHistory(options?: {
     pageSize?: number;
     cursor?: string | number;
@@ -254,8 +268,19 @@ export interface ExecuteBookingTransactionOptions {
   warmupPasses?: 1 | 2;
   /** Keep early preparation separate from the narrow destructive window. */
   cancelAt?: Date;
-  /** Scheduled runners use release minus three seconds for the second pass. */
+  /** Scheduled runners use this boundary for near-release latency calibration. */
   secondWarmupAt?: Date;
+  /** Read-only probes that must pass before any destructive cancellation. */
+  preCancellationProbeCount?: number;
+  preCancellationMinimumSuccesses?: number;
+  /** Additional read-only samples collected close to the release boundary. */
+  latencyProbeCount?: number;
+  latencyProbeIntervalMilliseconds?: number;
+  latencyProbeTimeoutMilliseconds?: number;
+  latencyCalibrationCutoffMilliseconds?: number;
+  latencyPercentile?: number;
+  minimumLatencySamples?: number;
+  fallbackRoundTripMilliseconds?: number;
   fireAt?: Date;
   /** Compensate transmission time so the request reaches Dooremi at release. */
   releaseAt?: Date;
@@ -264,7 +289,10 @@ export interface ExecuteBookingTransactionOptions {
   /** Retry only explicit JSON rejections, never ambiguous submissions. */
   rejectedSubmissionRetries?: number;
   rejectedSubmissionRetryDelayMilliseconds?: number;
+  rejectedSubmissionRetryDelaysMilliseconds?: readonly number[];
   rejectedSubmissionRetryStaggerMilliseconds?: number;
+  /** Poll history after an ambiguous response instead of blindly resubmitting. */
+  ambiguousReconciliationDelaysMilliseconds?: readonly number[];
   now?: () => Date;
   sleep?: Sleep;
   monotonicNow?: () => number;
@@ -298,9 +326,10 @@ async function warmClients(
   clients: readonly BookingTransactionClient[],
   pass: number,
   onTiming?: (message: string) => void,
+  timeoutMilliseconds?: number,
 ): Promise<number[]> {
   const outcomes = await Promise.allSettled(
-    clients.map((client) => client.warmup()),
+    clients.map((client) => client.warmup({ timeoutMs: timeoutMilliseconds })),
   );
   const elapsed: number[] = [];
   for (const outcome of outcomes) {
@@ -312,6 +341,56 @@ async function warmClients(
       );
     }
   }
+  return elapsed;
+}
+
+async function collectLatencyProbes(
+  client: BookingTransactionClient,
+  options: {
+    count: number;
+    intervalMilliseconds: number;
+    timeoutMilliseconds: number;
+    sleep: Sleep;
+    now: () => Date;
+    deadline?: Date;
+    label: string;
+    onTiming?: (message: string) => void;
+  },
+): Promise<number[]> {
+  const elapsed: number[] = [];
+  for (let index = 0; index < options.count; index += 1) {
+    const remaining = options.deadline
+      ? options.deadline.valueOf() - options.now().valueOf()
+      : Number.POSITIVE_INFINITY;
+    if (remaining <= 50) {
+      options.onTiming?.(
+        `${options.label} stopped before probe ${index + 1}; the release safety cutoff was reached`,
+      );
+      break;
+    }
+    const timeoutMilliseconds = Math.max(
+      25,
+      Math.min(options.timeoutMilliseconds, remaining - 25),
+    );
+    try {
+      const result = await client.warmup({ timeoutMs: timeoutMilliseconds });
+      elapsed.push(result.elapsedMs);
+    } catch (error) {
+      options.onTiming?.(
+        `${options.label} probe ${index + 1} warning: ${safeErrorMessage(error)}`,
+      );
+    }
+    if (index + 1 < options.count && options.intervalMilliseconds > 0) {
+      const intervalRemaining = options.deadline
+        ? options.deadline.valueOf() - options.now().valueOf()
+        : Number.POSITIVE_INFINITY;
+      if (intervalRemaining <= options.intervalMilliseconds + 50) break;
+      await options.sleep(options.intervalMilliseconds);
+    }
+  }
+  options.onTiming?.(
+    `${options.label} collected ${elapsed.length}/${options.count} RTT samples${elapsed.length ? ` (${elapsed.join(", ")}ms)` : ""}`,
+  );
   return elapsed;
 }
 
@@ -337,40 +416,72 @@ function toError(error: unknown): Error {
 export type CompensatedSubmissionTiming = {
   fireAt: Date;
   medianRoundTripMilliseconds: number | null;
+  calibratedRoundTripMilliseconds: number;
+  latencyPercentile: number;
+  sampleCount: number;
+  usedFallback: boolean;
   transmissionLeadMilliseconds: number;
 };
+
+export type SubmissionTimingPolicy = {
+  maximumTransmissionLeadMilliseconds?: number;
+  latencyPercentile?: number;
+  minimumSampleCount?: number;
+  fallbackRoundTripMilliseconds?: number;
+};
+
+function percentile(sorted: readonly number[], fraction: number): number | null {
+  if (sorted.length === 0) return null;
+  const position = (sorted.length - 1) * fraction;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  const weight = position - lower;
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
+}
 
 export function compensatedSubmissionTiming(
   releaseAt: Date,
   fireDelayMilliseconds: number,
   roundTripSamples: readonly number[],
-  maximumTransmissionLeadMilliseconds = 40,
+  policy: SubmissionTimingPolicy = {},
 ): CompensatedSubmissionTiming {
+  const maximumTransmissionLeadMilliseconds =
+    policy.maximumTransmissionLeadMilliseconds ?? 250;
+  const latencyPercentile = policy.latencyPercentile ?? 0.75;
+  const minimumSampleCount = policy.minimumSampleCount ?? 5;
+  const fallbackRoundTripMilliseconds =
+    policy.fallbackRoundTripMilliseconds ?? 120;
   if (
     !Number.isFinite(releaseAt.valueOf()) ||
     !Number.isFinite(fireDelayMilliseconds) ||
     fireDelayMilliseconds < 0 ||
     !Number.isFinite(maximumTransmissionLeadMilliseconds) ||
-    maximumTransmissionLeadMilliseconds < 0
+    maximumTransmissionLeadMilliseconds < 0 ||
+    !Number.isFinite(latencyPercentile) ||
+    latencyPercentile < 0.5 ||
+    latencyPercentile > 1 ||
+    !Number.isSafeInteger(minimumSampleCount) ||
+    minimumSampleCount < 1 ||
+    !Number.isFinite(fallbackRoundTripMilliseconds) ||
+    fallbackRoundTripMilliseconds < 0
   ) {
     throw new DomainError("The compensated submission timing is invalid.");
   }
   const samples = roundTripSamples
     .filter((sample) => Number.isFinite(sample) && sample >= 0)
     .sort((left, right) => left - right);
-  const midpoint = Math.floor(samples.length / 2);
-  const median = samples.length
-    ? samples.length % 2 === 0
-      ? (samples[midpoint - 1] + samples[midpoint]) / 2
-      : samples[midpoint]
-    : null;
-  const transmissionLeadMilliseconds =
-    median === null
-      ? 0
-      : Math.min(
-          maximumTransmissionLeadMilliseconds,
-          Math.max(0, Math.round(median / 2)),
-        );
+  const median = percentile(samples, 0.5);
+  const measured = percentile(samples, latencyPercentile);
+  const usedFallback = samples.length < minimumSampleCount;
+  const calibratedRoundTripMilliseconds = Math.max(
+    measured ?? 0,
+    usedFallback ? fallbackRoundTripMilliseconds : 0,
+  );
+  const transmissionLeadMilliseconds = Math.min(
+    maximumTransmissionLeadMilliseconds,
+    Math.max(0, Math.round(calibratedRoundTripMilliseconds / 2)),
+  );
   return {
     fireAt: new Date(
       releaseAt.valueOf() +
@@ -378,6 +489,10 @@ export function compensatedSubmissionTiming(
         transmissionLeadMilliseconds,
     ),
     medianRoundTripMilliseconds: median,
+    calibratedRoundTripMilliseconds,
+    latencyPercentile,
+    sampleCount: samples.length,
+    usedFallback,
     transmissionLeadMilliseconds,
   };
 }
@@ -388,36 +503,140 @@ async function createSingleBookingWithSafeRetry(
   target: BookingTarget,
   targetIndex: number,
   options: {
-    retries: number;
-    retryDelayMilliseconds: number;
+    retryDelaysMilliseconds: readonly number[];
     retryStaggerMilliseconds: number;
     sleep: Sleep;
+    now: () => Date;
+    monotonicNow: () => number;
+    releaseAt?: Date;
     onTiming?: (message: string) => void;
   },
 ): Promise<SingleBookingResult> {
   for (let attempt = 0; ; attempt += 1) {
+    const started = options.monotonicNow();
+    const startedOffset = options.releaseAt
+      ? options.now().valueOf() - options.releaseAt.valueOf()
+      : null;
+    options.onTiming?.(
+      `booking attempt ${attempt + 1}/${options.retryDelaysMilliseconds.length + 1} for ${target.eventDay} ${target.eventTime} transmitted${startedOffset === null ? "" : ` at T${startedOffset >= 0 ? "+" : ""}${Math.round(startedOffset)}ms`}`,
+    );
     try {
-      return await client.createSingleBooking(
+      const result = await client.createSingleBooking(
         singleTargetSchedule(schedule, target),
       );
+      options.onTiming?.(
+        `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} confirmed in ${Math.round(options.monotonicNow() - started)}ms${result.bookingOrderId === null ? "" : ` as order ${result.bookingOrderId}`}`,
+      );
+      return result;
     } catch (error) {
       const normalized = toError(error);
+      const elapsed = Math.round(options.monotonicNow() - started);
       if (
         !(normalized instanceof DooremiError) ||
         normalized.code !== "rejected" ||
-        attempt >= options.retries
+        attempt >= options.retryDelaysMilliseconds.length
       ) {
+        options.onTiming?.(
+          `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ended in ${elapsed}ms with ${normalized instanceof DooremiError ? normalized.code : "unexpected_error"}: ${safeErrorMessage(normalized)}`,
+        );
         throw normalized;
       }
       const delay =
-        options.retryDelayMilliseconds +
+        options.retryDelaysMilliseconds[attempt] +
         targetIndex * options.retryStaggerMilliseconds;
       options.onTiming?.(
-        `explicit rejection for ${target.eventDay} ${target.eventTime}; safe retry ${attempt + 1} in ${delay}ms`,
+        `explicit rejection for ${target.eventDay} ${target.eventTime} returned in ${elapsed}ms; safe retry ${attempt + 1}/${options.retryDelaysMilliseconds.length} in ${delay}ms`,
       );
       if (delay > 0) await options.sleep(delay);
     }
   }
+}
+
+function bookingMatchesTarget(
+  booking: BookingRecord,
+  target: BookingTarget,
+): boolean {
+  try {
+    return (
+      normalizeEventDay(booking.eventDay) === target.eventDay &&
+      booking.eventTimes.includes(target.eventTime)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function reconcileAmbiguousFailures(
+  client: BookingTransactionClient,
+  failures: readonly FailedSubmission[],
+  options: {
+    delaysMilliseconds: readonly number[];
+    sleep: Sleep;
+    onTiming?: (message: string) => void;
+  },
+): Promise<{
+  confirmed: ConfirmedSubmission[];
+  unresolved: FailedSubmission[];
+}> {
+  const unresolved = new Map(
+    failures
+      .filter(
+        (failure) =>
+          failure.error instanceof DooremiError &&
+          failure.error.code === "ambiguous_submission",
+      )
+      .map((failure) => [failure.target.eventDay + " " + failure.target.eventTime, failure]),
+  );
+  const confirmed: ConfirmedSubmission[] = [];
+  if (unresolved.size === 0 || options.delaysMilliseconds.length === 0) {
+    return { confirmed, unresolved: [...failures] };
+  }
+
+  for (let index = 0; index < options.delaysMilliseconds.length; index += 1) {
+    const delay = options.delaysMilliseconds[index];
+    if (delay > 0) await options.sleep(delay);
+    let history: BookingRecord[];
+    try {
+      history = activeTennisBookings(
+        await client.bookingHistory({ pageSize: 50 }),
+      );
+    } catch (error) {
+      options.onTiming?.(
+        `ambiguous submission reconciliation ${index + 1}/${options.delaysMilliseconds.length} warning: ${safeErrorMessage(error)}`,
+      );
+      continue;
+    }
+    for (const [key, failure] of unresolved) {
+      const booking = history.find((item) =>
+        bookingMatchesTarget(item, failure.target),
+      );
+      if (!booking) continue;
+      confirmed.push({
+        target: failure.target,
+        result: {
+          message: "Confirmed from booking history after an ambiguous response",
+          bookingOrderId: booking.id,
+        },
+        startedMs: failure.startedMs,
+      });
+      unresolved.delete(key);
+      options.onTiming?.(
+        `ambiguous response for ${failure.target.eventDay} ${failure.target.eventTime} reconciled as booking ${booking.id}`,
+      );
+    }
+    if (unresolved.size === 0) break;
+  }
+
+  const unresolvedAmbiguous = new Set(unresolved.values());
+  return {
+    confirmed,
+    unresolved: failures.filter(
+      (failure) =>
+        !(failure.error instanceof DooremiError) ||
+        failure.error.code !== "ambiguous_submission" ||
+        unresolvedAmbiguous.has(failure),
+    ),
+  };
 }
 
 export async function executeBookingTransaction(
@@ -429,18 +648,66 @@ export async function executeBookingTransaction(
   const rejectedSubmissionRetries = options.rejectedSubmissionRetries ?? 0;
   const rejectedSubmissionRetryDelayMilliseconds =
     options.rejectedSubmissionRetryDelayMilliseconds ?? 60;
+  const rejectedSubmissionRetryDelaysMilliseconds =
+    options.rejectedSubmissionRetryDelaysMilliseconds === undefined
+      ? Array.from(
+          { length: rejectedSubmissionRetries },
+          () => rejectedSubmissionRetryDelayMilliseconds,
+        )
+      : [...options.rejectedSubmissionRetryDelaysMilliseconds];
   const rejectedSubmissionRetryStaggerMilliseconds =
     options.rejectedSubmissionRetryStaggerMilliseconds ?? 10;
+  const preCancellationProbeCount =
+    options.preCancellationProbeCount ?? 0;
+  const preCancellationMinimumSuccesses =
+    options.preCancellationMinimumSuccesses ?? 0;
+  const latencyProbeCount = options.latencyProbeCount ?? 0;
+  const latencyProbeIntervalMilliseconds =
+    options.latencyProbeIntervalMilliseconds ?? 75;
+  const latencyProbeTimeoutMilliseconds =
+    options.latencyProbeTimeoutMilliseconds ?? 500;
+  const latencyCalibrationCutoffMilliseconds =
+    options.latencyCalibrationCutoffMilliseconds ?? 1_500;
+  const minimumLatencySamples = options.minimumLatencySamples ?? 5;
+  const ambiguousReconciliationDelaysMilliseconds = [
+    ...(options.ambiguousReconciliationDelaysMilliseconds ?? []),
+  ];
   if (
     !Number.isSafeInteger(rejectedSubmissionRetries) ||
     rejectedSubmissionRetries < 0 ||
-    rejectedSubmissionRetries > 2 ||
+    rejectedSubmissionRetries > 6 ||
     !Number.isFinite(rejectedSubmissionRetryDelayMilliseconds) ||
     rejectedSubmissionRetryDelayMilliseconds < 0 ||
+    rejectedSubmissionRetryDelaysMilliseconds.length > 6 ||
+    rejectedSubmissionRetryDelaysMilliseconds.some(
+      (delay) => !Number.isFinite(delay) || delay < 0 || delay > 5_000,
+    ) ||
     !Number.isFinite(rejectedSubmissionRetryStaggerMilliseconds) ||
-    rejectedSubmissionRetryStaggerMilliseconds < 0
+    rejectedSubmissionRetryStaggerMilliseconds < 0 ||
+    !Number.isSafeInteger(preCancellationProbeCount) ||
+    preCancellationProbeCount < 0 ||
+    preCancellationProbeCount > 10 ||
+    !Number.isSafeInteger(preCancellationMinimumSuccesses) ||
+    preCancellationMinimumSuccesses < 0 ||
+    preCancellationMinimumSuccesses > preCancellationProbeCount ||
+    !Number.isSafeInteger(latencyProbeCount) ||
+    latencyProbeCount < 0 ||
+    latencyProbeCount > 10 ||
+    !Number.isFinite(latencyProbeIntervalMilliseconds) ||
+    latencyProbeIntervalMilliseconds < 0 ||
+    latencyProbeIntervalMilliseconds > 2_000 ||
+    !Number.isFinite(latencyProbeTimeoutMilliseconds) ||
+    latencyProbeTimeoutMilliseconds < 25 ||
+    latencyProbeTimeoutMilliseconds > 5_000 ||
+    !Number.isFinite(latencyCalibrationCutoffMilliseconds) ||
+    latencyCalibrationCutoffMilliseconds < 250 ||
+    latencyCalibrationCutoffMilliseconds > 10_000 ||
+    ambiguousReconciliationDelaysMilliseconds.length > 6 ||
+    ambiguousReconciliationDelaysMilliseconds.some(
+      (delay) => !Number.isFinite(delay) || delay < 0 || delay > 5_000,
+    )
   ) {
-    throw new DomainError("The safe submission retry configuration is invalid.");
+    throw new DomainError("The booking timing or retry configuration is invalid.");
   }
   for (const executionTime of [
     options.cancelAt,
@@ -457,7 +724,14 @@ export async function executeBookingTransaction(
       options.releaseAt,
       options.fireDelayMilliseconds ?? 0,
       [],
-      options.maximumTransmissionLeadMilliseconds,
+      {
+        maximumTransmissionLeadMilliseconds:
+          options.maximumTransmissionLeadMilliseconds,
+        latencyPercentile: options.latencyPercentile,
+        minimumSampleCount: minimumLatencySamples,
+        fallbackRoundTripMilliseconds:
+          options.fallbackRoundTripMilliseconds,
+      },
     );
   }
   const history =
@@ -477,9 +751,31 @@ export async function executeBookingTransaction(
   warmupElapsedMs.push(...firstWarmupElapsedMs);
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? (() => new Date());
+  let preCancellationProbeElapsedMs: number[] = [];
   if (active.length && options.cancelAt) {
     await sleepUntil(options.cancelAt, now, sleep);
     options.onTiming?.("configured cancellation window opened");
+    if (preCancellationProbeCount > 0) {
+      preCancellationProbeElapsedMs = await collectLatencyProbes(clients[0], {
+        count: preCancellationProbeCount,
+        intervalMilliseconds: latencyProbeIntervalMilliseconds,
+        timeoutMilliseconds: latencyProbeTimeoutMilliseconds,
+        sleep,
+        now,
+        label: "pre-cancellation latency gate",
+        onTiming: options.onTiming,
+      });
+      warmupElapsedMs.push(...preCancellationProbeElapsedMs);
+      if (
+        preCancellationProbeElapsedMs.length <
+        preCancellationMinimumSuccesses
+      ) {
+        throw new LatencyPreflightError(
+          preCancellationProbeElapsedMs.length,
+          preCancellationMinimumSuccesses,
+        );
+      }
+    }
   }
   const cancelledBookingIds = active.length
     ? await cancelActiveTennisBookings(client, active, {
@@ -490,19 +786,65 @@ export async function executeBookingTransaction(
     : [];
 
   const warmupPasses = options.warmupPasses ?? 1;
-  let latestWarmupElapsedMs = firstWarmupElapsedMs;
+  let latestWarmupElapsedMs = [
+    ...firstWarmupElapsedMs,
+    ...preCancellationProbeElapsedMs,
+  ];
   if (warmupPasses === 2) {
     if (options.secondWarmupAt) {
       await sleepUntil(options.secondWarmupAt, now, sleep);
     }
-    const secondWarmupElapsedMs = await warmClients(
-      clients,
-      2,
-      options.onTiming,
-    );
+    let calibrationElapsedMs: number[] = [];
+    if (latencyProbeCount > 0) {
+      const deadline = options.releaseAt
+        ? new Date(
+            options.releaseAt.valueOf() -
+              latencyCalibrationCutoffMilliseconds,
+          )
+        : undefined;
+      calibrationElapsedMs = await collectLatencyProbes(clients[0], {
+        count: latencyProbeCount,
+        intervalMilliseconds: latencyProbeIntervalMilliseconds,
+        timeoutMilliseconds: latencyProbeTimeoutMilliseconds,
+        sleep,
+        now,
+        deadline,
+        label: "release latency calibration",
+        onTiming: options.onTiming,
+      });
+      warmupElapsedMs.push(...calibrationElapsedMs);
+    }
+    const remainingBeforeRelease = options.releaseAt
+      ? options.releaseAt.valueOf() - now().valueOf()
+      : Number.POSITIVE_INFINITY;
+    const secondWarmupElapsedMs =
+      remainingBeforeRelease > latencyProbeTimeoutMilliseconds + 250
+        ? await warmClients(
+            clients,
+            2,
+            options.onTiming,
+            latencyProbeTimeoutMilliseconds,
+          )
+        : [];
+    if (
+      options.releaseAt &&
+      remainingBeforeRelease <= latencyProbeTimeoutMilliseconds + 250
+    ) {
+      options.onTiming?.(
+        `final warmup skipped with ${Math.max(0, Math.round(remainingBeforeRelease))}ms remaining; preserving the calibrated transmit boundary`,
+      );
+    }
     warmupElapsedMs.push(...secondWarmupElapsedMs);
-    if (secondWarmupElapsedMs.length > 0) {
-      latestWarmupElapsedMs = secondWarmupElapsedMs;
+    const nearReleaseSamples = [
+      ...calibrationElapsedMs,
+      ...secondWarmupElapsedMs,
+    ];
+    const releaseSamples =
+      nearReleaseSamples.length >= minimumLatencySamples
+        ? nearReleaseSamples
+        : [...preCancellationProbeElapsedMs, ...nearReleaseSamples];
+    if (releaseSamples.length > 0) {
+      latestWarmupElapsedMs = releaseSamples;
     }
   }
 
@@ -512,12 +854,19 @@ export async function executeBookingTransaction(
       options.releaseAt,
       options.fireDelayMilliseconds ?? 0,
       latestWarmupElapsedMs,
-      options.maximumTransmissionLeadMilliseconds,
+      {
+        maximumTransmissionLeadMilliseconds:
+          options.maximumTransmissionLeadMilliseconds,
+        latencyPercentile: options.latencyPercentile,
+        minimumSampleCount: minimumLatencySamples,
+        fallbackRoundTripMilliseconds:
+          options.fallbackRoundTripMilliseconds,
+      },
     );
     fireAt = compensated.fireAt;
     const offset = fireAt.valueOf() - options.releaseAt.valueOf();
     options.onTiming?.(
-      `submission transmit scheduled at T${offset >= 0 ? "+" : ""}${offset}ms using ${compensated.medianRoundTripMilliseconds ?? "no"}ms median warmup RTT`,
+      `submission transmit scheduled at T${offset >= 0 ? "+" : ""}${offset}ms from ${compensated.sampleCount} samples: p${Math.round(compensated.latencyPercentile * 100)} RTT ${Math.round(compensated.calibratedRoundTripMilliseconds)}ms, median ${compensated.medianRoundTripMilliseconds === null ? "n/a" : `${Math.round(compensated.medianRoundTripMilliseconds)}ms`}, lead ${compensated.transmissionLeadMilliseconds}ms${compensated.usedFallback ? " (fallback floor applied)" : ""}`,
     );
   }
   if (fireAt) {
@@ -535,12 +884,14 @@ export async function executeBookingTransaction(
           target,
           index,
           {
-            retries: rejectedSubmissionRetries,
-            retryDelayMilliseconds:
-              rejectedSubmissionRetryDelayMilliseconds,
+            retryDelaysMilliseconds:
+              rejectedSubmissionRetryDelaysMilliseconds,
             retryStaggerMilliseconds:
               rejectedSubmissionRetryStaggerMilliseconds,
             sleep,
+            now,
+            monotonicNow,
+            releaseAt: options.releaseAt,
             onTiming: options.onTiming,
           },
         );
@@ -566,6 +917,23 @@ export async function executeBookingTransaction(
   for (const outcome of outcomes) {
     if (outcome.ok) results.push(outcome);
     else failures.push(outcome);
+  }
+  if (
+    failures.some(
+      (failure) =>
+        failure.error instanceof DooremiError &&
+        failure.error.code === "ambiguous_submission",
+    ) &&
+    ambiguousReconciliationDelaysMilliseconds.length > 0
+  ) {
+    const reconciled = await reconcileAmbiguousFailures(client, failures, {
+      delaysMilliseconds: ambiguousReconciliationDelaysMilliseconds,
+      sleep,
+      onTiming: options.onTiming,
+    });
+    results.push(...reconciled.confirmed);
+    failures.length = 0;
+    failures.push(...reconciled.unresolved);
   }
   const starts = outcomes.map((outcome) => outcome.startedMs);
   const submitSkewMs =

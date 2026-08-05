@@ -13,6 +13,7 @@ import {
   type WarmupResult,
 } from "../lib/dooremi.js";
 import {
+  LatencyPreflightError,
   PartialBookingError,
   RebookingSubmissionError,
   cancelActiveTennisBookings,
@@ -27,11 +28,12 @@ const noSleep = async () => {};
 function confirmedBooking(
   id: number,
   eventTimes: string[] = ["07:00-08:00"],
+  eventDay = "Fri, 17/07/2026",
 ): BookingRecord {
   return {
     id,
     facilityName: "Tennis Court",
-    eventDay: "Fri, 17/07/2026",
+    eventDay,
     eventTime: eventTimes.join(" · "),
     eventTimes,
     status: 1,
@@ -183,12 +185,22 @@ class TransactionFake implements BookingTransactionClient {
   readonly submitted: Schedule[] = [];
   readonly active = new Map<number, BookingRecord>();
   readonly failTimes = new Set<string>();
+  readonly ambiguousConfirmedTimes = new Set<string>();
   readonly rejectedAttempts = new Map<string, number>();
+  readonly warmupSamples: number[] = [];
+  warmupFailuresRemaining = 0;
   nextOrderId = 900;
 
   async warmup(): Promise<WarmupResult> {
     this.timeline.push("warm");
-    return { elapsedMs: 1, serverDate: null };
+    if (this.warmupFailuresRemaining > 0) {
+      this.warmupFailuresRemaining -= 1;
+      throw new DooremiError("probe failed", "connectivity");
+    }
+    return {
+      elapsedMs: this.warmupSamples.shift() ?? 1,
+      serverDate: null,
+    };
   }
 
   async bookingHistory(): Promise<BookingRecord[]> {
@@ -215,6 +227,13 @@ class TransactionFake implements BookingTransactionClient {
       );
     }
     if (this.failTimes.has(time)) {
+      if (this.ambiguousConfirmedTimes.has(time)) {
+        this.nextOrderId += 1;
+        this.active.set(
+          this.nextOrderId,
+          confirmedBooking(this.nextOrderId, [time], schedule.eventDay),
+        );
+      }
       throw new AmbiguousSubmissionError();
     }
     this.nextOrderId += 1;
@@ -300,6 +319,39 @@ test("scheduled timing waits for T-3 before the second warmup and then for fireA
   ]);
 });
 
+test("the release calibration collects five bounded probes before submission", async () => {
+  const client = new TransactionFake();
+  client.warmupSamples.push(90, 80, 100, 120, 140, 110, 95);
+  const sleeps: number[] = [];
+  await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      warmupPasses: 2,
+      secondWarmupAt: new Date(0),
+      fireAt: new Date(0),
+      latencyProbeCount: 5,
+      latencyProbeIntervalMilliseconds: 75,
+      latencyProbeTimeoutMilliseconds: 500,
+      now: () => new Date(0),
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      },
+    },
+  );
+  assert.equal(
+    client.timeline.filter((item) => item === "warm").length,
+    7,
+  );
+  assert.deepEqual(sleeps, [75, 75, 75, 75]);
+  assert.equal(client.submitted.length, 1);
+});
+
 test("hosted cancellation waits for the narrow destructive window", async () => {
   const client = new TransactionFake();
   client.active.set(501, confirmedBooking(501));
@@ -338,17 +390,112 @@ test("submission timing compensates measured transit with a bounded lead", () =>
     release,
     10,
     [80, 100, 120],
-    40,
+    {
+      maximumTransmissionLeadMilliseconds: 40,
+      minimumSampleCount: 5,
+      fallbackRoundTripMilliseconds: 120,
+    },
   );
   assert.equal(timing.medianRoundTripMilliseconds, 100);
   assert.equal(timing.transmissionLeadMilliseconds, 40);
   assert.equal(timing.fireAt.valueOf(), release.valueOf() - 30);
+  assert.equal(timing.usedFallback, true);
 });
 
-test("an explicit rejection is retried once with a safe stagger", async () => {
+test("submission timing uses a recent p75 sample set instead of a fixed cap", () => {
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  const timing = compensatedSubmissionTiming(
+    release,
+    10,
+    [80, 100, 120, 140, 400],
+    {
+      maximumTransmissionLeadMilliseconds: 250,
+      latencyPercentile: 0.75,
+      minimumSampleCount: 5,
+      fallbackRoundTripMilliseconds: 120,
+    },
+  );
+  assert.equal(timing.sampleCount, 5);
+  assert.equal(timing.medianRoundTripMilliseconds, 120);
+  assert.equal(timing.calibratedRoundTripMilliseconds, 140);
+  assert.equal(timing.transmissionLeadMilliseconds, 70);
+  assert.equal(timing.fireAt.valueOf(), release.valueOf() - 60);
+  assert.equal(timing.usedFallback, false);
+});
+
+test("the transaction fires from its near-release latency calibration", async () => {
   const client = new TransactionFake();
-  client.rejectedAttempts.set("19:00-20:00", 1);
+  client.warmupSamples.push(90, 80, 100, 120, 140, 400, 110);
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  let current = release.valueOf() - 4_000;
   const sleeps: number[] = [];
+  await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      warmupPasses: 2,
+      secondWarmupAt: new Date(current),
+      releaseAt: release,
+      fireDelayMilliseconds: 10,
+      latencyProbeCount: 5,
+      latencyProbeIntervalMilliseconds: 75,
+      latencyProbeTimeoutMilliseconds: 500,
+      latencyCalibrationCutoffMilliseconds: 1_500,
+      latencyPercentile: 0.75,
+      minimumLatencySamples: 5,
+      fallbackRoundTripMilliseconds: 120,
+      maximumTransmissionLeadMilliseconds: 250,
+      now: () => new Date(current),
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        current += milliseconds;
+      },
+    },
+  );
+  assert.equal(current, release.valueOf() - 58);
+  assert.deepEqual(sleeps.slice(0, 4), [75, 75, 75, 75]);
+  assert.equal(client.submitted.length, 1);
+});
+
+test("the pre-cancellation latency gate preserves existing bookings when probes fail", async () => {
+  const client = new TransactionFake();
+  client.active.set(501, confirmedBooking(501));
+  // Two initial target warmups plus all three gate probes fail.
+  client.warmupFailuresRemaining = 5;
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-07-18",
+        eventTimes: ["19:00-20:00"],
+        facilityId: 9001,
+      },
+      {
+        activeBookings: [...client.active.values()],
+        cancelAt: new Date(0),
+        preCancellationProbeCount: 3,
+        preCancellationMinimumSuccesses: 2,
+        latencyProbeTimeoutMilliseconds: 500,
+        sleep: noSleep,
+      },
+    ),
+    LatencyPreflightError,
+  );
+  assert.equal(client.timeline.some((item) => item.startsWith("cancel:")), false);
+  assert.equal(client.submitted.length, 0);
+  assert.equal(client.active.has(501), true);
+});
+
+test("an explicit rejection follows the complete bounded retry ladder", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 4);
+  const sleeps: number[] = [];
+  const timing: string[] = [];
   const result = await executeBookingTransaction(
     client,
     {
@@ -358,16 +505,126 @@ test("an explicit rejection is retried once with a safe stagger", async () => {
     },
     {
       activeBookings: [],
-      rejectedSubmissionRetries: 1,
-      rejectedSubmissionRetryDelayMilliseconds: 60,
+      rejectedSubmissionRetryDelaysMilliseconds: [40, 90, 200, 450],
       sleep: async (milliseconds) => {
         sleeps.push(milliseconds);
       },
+      releaseAt: new Date(0),
+      now: () => new Date(10),
+      onTiming: (message) => timing.push(message),
     },
   );
   assert.equal(result.bookingOrderIds.length, 1);
-  assert.deepEqual(sleeps, [60]);
-  assert.equal(client.submitted.length, 2);
+  assert.deepEqual(sleeps, [40, 90, 200, 450]);
+  assert.equal(client.submitted.length, 5);
+  assert.ok(timing.some((message) => message.includes("at T+10ms")));
+  assert.ok(timing.some((message) => message.includes("returned in")));
+});
+
+test("the rejection retry ladder stops after five total attempts", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 10);
+  const sleeps: number[] = [];
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-07-17",
+        eventTimes: ["19:00-20:00"],
+        facilityId: 9001,
+      },
+      {
+        activeBookings: [],
+        rejectedSubmissionRetryDelaysMilliseconds: [40, 90, 200, 450],
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof DooremiError && error.code === "rejected",
+  );
+  assert.equal(client.submitted.length, 5);
+  assert.deepEqual(sleeps, [40, 90, 200, 450]);
+});
+
+test("retries stay isolated and never resubmit a target that already confirmed", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 2);
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00", "20:00-21:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      rejectedSubmissionRetryDelaysMilliseconds: [40, 90, 200, 450],
+      sleep: noSleep,
+    },
+  );
+  assert.equal(result.bookingOrderIds.length, 2);
+  assert.equal(
+    client.submitted.filter(
+      (schedule) => schedule.eventTimes?.[0] === "19:00-20:00",
+    ).length,
+    3,
+  );
+  assert.equal(
+    client.submitted.filter(
+      (schedule) => schedule.eventTimes?.[0] === "20:00-21:00",
+    ).length,
+    1,
+  );
+});
+
+test("an ambiguous response is reconciled from history without a duplicate submit", async () => {
+  const client = new TransactionFake();
+  client.failTimes.add("19:00-20:00");
+  client.ambiguousConfirmedTimes.add("19:00-20:00");
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      ambiguousReconciliationDelaysMilliseconds: [0, 250, 750],
+      sleep: noSleep,
+    },
+  );
+  assert.equal(result.bookingOrderIds.length, 1);
+  assert.equal(client.submitted.length, 1);
+  assert.match(result.results[0].result.message, /booking history/i);
+});
+
+test("an unresolved ambiguous response is polled but never blindly retried", async () => {
+  const client = new TransactionFake();
+  client.failTimes.add("19:00-20:00");
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-07-17",
+        eventTimes: ["19:00-20:00"],
+        facilityId: 9001,
+      },
+      {
+        activeBookings: [],
+        ambiguousReconciliationDelaysMilliseconds: [0, 250, 750],
+        sleep: noSleep,
+      },
+    ),
+    AmbiguousSubmissionError,
+  );
+  assert.equal(client.submitted.length, 1);
+  assert.equal(
+    client.timeline.filter((item) => item === "history").length,
+    3,
+  );
 });
 
 test("a partial result records successes and never retries an ambiguous target", async () => {

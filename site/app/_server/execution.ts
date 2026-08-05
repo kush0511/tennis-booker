@@ -11,9 +11,19 @@ import {
 import { safeErrorMessage } from "@/lib/dooremi";
 import {
   effectiveHostedPreparationLead,
+  HOSTED_AMBIGUOUS_RECONCILIATION_DELAYS_MILLISECONDS,
+  HOSTED_FALLBACK_ROUND_TRIP_MILLISECONDS,
+  HOSTED_LATENCY_CALIBRATION_CUTOFF_MILLISECONDS,
+  HOSTED_LATENCY_CALIBRATION_LEAD_MILLISECONDS,
+  HOSTED_LATENCY_PERCENTILE,
+  HOSTED_LATENCY_PROBE_COUNT,
+  HOSTED_LATENCY_PROBE_INTERVAL_MILLISECONDS,
+  HOSTED_LATENCY_PROBE_TIMEOUT_MILLISECONDS,
   HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
-  HOSTED_REJECTED_SUBMISSION_RETRIES,
-  HOSTED_REJECTED_SUBMISSION_RETRY_DELAY_MILLISECONDS,
+  HOSTED_MINIMUM_LATENCY_SAMPLES,
+  HOSTED_PRE_CANCELLATION_MINIMUM_SUCCESSES,
+  HOSTED_PRE_CANCELLATION_PROBE_COUNT,
+  HOSTED_REJECTED_SUBMISSION_RETRY_DELAYS_MILLISECONDS,
   HOSTED_REJECTED_SUBMISSION_RETRY_STAGGER_MILLISECONDS,
 } from "@/lib/automation";
 
@@ -114,8 +124,13 @@ export async function executeStoredSchedule(
     facilityId: stored.facilityId,
     facilityCategoryId: stored.facilityCategoryId,
   });
+  const timingWrites: Promise<void>[] = [];
   const timing = (message: string) => {
-    void appendScheduleEvent(stored.id, stored.userEmail, "info", message);
+    timingWrites.push(
+      appendScheduleEvent(stored.id, stored.userEmail, "info", message).catch(
+        () => undefined,
+      ),
+    );
   };
   timing(
     `hosted preparation started at T-${preparationLeadSeconds}s; cancellation remains at T-${config.cancellationLeadSeconds}s`,
@@ -128,16 +143,33 @@ export async function executeStoredSchedule(
       cancelAt: new Date(
         release.valueOf() - config.cancellationLeadSeconds * 1_000,
       ),
-      secondWarmupAt: new Date(release.valueOf() - 3_000),
+      secondWarmupAt: new Date(
+        release.valueOf() - HOSTED_LATENCY_CALIBRATION_LEAD_MILLISECONDS,
+      ),
+      preCancellationProbeCount: HOSTED_PRE_CANCELLATION_PROBE_COUNT,
+      preCancellationMinimumSuccesses:
+        HOSTED_PRE_CANCELLATION_MINIMUM_SUCCESSES,
+      latencyProbeCount: HOSTED_LATENCY_PROBE_COUNT,
+      latencyProbeIntervalMilliseconds:
+        HOSTED_LATENCY_PROBE_INTERVAL_MILLISECONDS,
+      latencyProbeTimeoutMilliseconds:
+        HOSTED_LATENCY_PROBE_TIMEOUT_MILLISECONDS,
+      latencyCalibrationCutoffMilliseconds:
+        HOSTED_LATENCY_CALIBRATION_CUTOFF_MILLISECONDS,
+      latencyPercentile: HOSTED_LATENCY_PERCENTILE,
+      minimumLatencySamples: HOSTED_MINIMUM_LATENCY_SAMPLES,
+      fallbackRoundTripMilliseconds:
+        HOSTED_FALLBACK_ROUND_TRIP_MILLISECONDS,
       releaseAt: release,
       fireDelayMilliseconds: config.fireDelayMilliseconds,
       maximumTransmissionLeadMilliseconds:
         HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
-      rejectedSubmissionRetries: HOSTED_REJECTED_SUBMISSION_RETRIES,
-      rejectedSubmissionRetryDelayMilliseconds:
-        HOSTED_REJECTED_SUBMISSION_RETRY_DELAY_MILLISECONDS,
+      rejectedSubmissionRetryDelaysMilliseconds:
+        HOSTED_REJECTED_SUBMISSION_RETRY_DELAYS_MILLISECONDS,
       rejectedSubmissionRetryStaggerMilliseconds:
         HOSTED_REJECTED_SUBMISSION_RETRY_STAGGER_MILLISECONDS,
+      ambiguousReconciliationDelaysMilliseconds:
+        HOSTED_AMBIGUOUS_RECONCILIATION_DELAYS_MILLISECONDS,
       onTiming: timing,
     });
     const completed = successfulResult(result);
@@ -198,6 +230,8 @@ export async function executeStoredSchedule(
       throw new HttpError(409, message);
     }
     throw error;
+  } finally {
+    await Promise.all(timingWrites);
   }
 }
 

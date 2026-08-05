@@ -200,10 +200,14 @@ production heartbeat appeared across multiple trigger boundaries. Hosted plans
 are now woken externally by Google Cloud Scheduler every minute. The signed
 runner still performs the exact release timing and D1 lease claiming; the macOS
 runner remains an independent fallback. The hosted runner prepares at T-60 but
-waits until the configured T-15 boundary to cancel, compensates transmission
-time from the final warmup RTT, and retries one explicit Dooremi rejection while
-never retrying an ambiguous submission. All due users arm concurrently. The
-website does not label a release outside the external wake window as armed.
+waits until the configured T-15 boundary to run three read-only latency probes.
+At least two must succeed before any existing booking is cancelled. It then
+samples latency five more times near release, derives the transmit lead from the
+current p75 RTT (with a bounded fallback), and retries confirmed Dooremi
+rejections on a 40/90/200/450ms backoff. Ambiguous submissions are never blindly
+resent; booking history is polled four times to reconcile a confirmation safely.
+All due users arm concurrently. The website does not label a release outside
+the external wake window as armed.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

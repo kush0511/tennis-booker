@@ -116,6 +116,21 @@ test("unreadable create responses are explicitly ambiguous", async () => {
   );
 });
 
+test("server errors during submission are ambiguous and cannot be blindly retried", async () => {
+  const client = new DooremiClient({
+    token: "hosted-secret-value",
+    fetch: async () => jsonResponse({ status: 1, msg: "error" }, 503),
+  });
+  await assert.rejects(
+    client.createSingleBooking({
+      eventDay: "2026-07-17",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    }),
+    AmbiguousSubmissionError,
+  );
+});
+
 test("a nonzero JSON status is an explicit rejection that can be retried safely", async () => {
   const client = new DooremiClient({
     token: "hosted-secret-value",

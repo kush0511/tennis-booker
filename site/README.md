@@ -42,13 +42,15 @@ plan.
 
 Hosted execution claims and warms each transaction at least 60 seconds before
 release, but does not expose existing bookings for that full preparation
-window. It waits until the configured T-15-second cancellation boundary, sends
-distinct cancellations with a small concurrent stagger, verifies history, then
-re-warms all replacement connections at T-3 seconds. The final warmup RTT
-compensates up to 40 milliseconds of network transit so requests reach Dooremi
-at the configured release offset. One explicit JSON rejection is retried with a
-small stagger; ambiguous submissions are never retried. Due plans execute in
-parallel so one user's release wait cannot delay another user's plan.
+window. At the configured T-15-second boundary it runs three authenticated,
+read-only latency probes and requires at least two successes before cancelling
+anything. After cancellation and history verification, it takes five more
+bounded samples near release and derives the transmit lead from the current p75
+RTT, with a 120ms fallback floor and a 250ms maximum. Explicit JSON rejections
+follow a bounded 40/90/200/450ms retry ladder. Ambiguous submissions are never
+blindly resent; the runner polls booking history at 0/250/750/1500ms to
+reconcile a confirmation safely. Due plans execute in parallel so one user's
+release wait cannot delay another user's plan.
 
 The Worker exports a scheduled handler and the application exposes
 `POST /api/automation/run-due`, authenticated with `AUTOMATION_SECRET`. The

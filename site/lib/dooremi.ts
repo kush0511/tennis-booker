@@ -150,6 +150,7 @@ interface RequestOptions {
   query?: Record<string, string | number>;
   body?: unknown;
   ambiguousSubmission?: boolean;
+  timeoutMs?: number;
 }
 
 interface RequestResult {
@@ -241,8 +242,10 @@ export class DooremiClient {
     });
   }
 
-  async warmup(): Promise<WarmupResult> {
-    const result = await this.#request(DOOREMI_ENDPOINTS.checkLogin);
+  async warmup(options: { timeoutMs?: number } = {}): Promise<WarmupResult> {
+    const result = await this.#request(DOOREMI_ENDPOINTS.checkLogin, {
+      timeoutMs: options.timeoutMs,
+    });
     const header = result.headers.get("date");
     const parsed = header ? new Date(header) : null;
     return {
@@ -401,8 +404,12 @@ export class DooremiClient {
       url.searchParams.set(key, String(value));
     }
 
+    const requestTimeoutMs = options.timeoutMs ?? this.#timeoutMs;
+    if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
+      throw new DooremiError("The Dooremi timeout must be greater than zero.");
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     const started = this.#monotonicNow();
     try {
       let response: Response;
@@ -439,6 +446,11 @@ export class DooremiClient {
       }
       if (response.status === 429) throw new RateLimitError();
       if (response.status >= 500) {
+        if (options.ambiguousSubmission) {
+          throw new AmbiguousSubmissionError(
+            `Dooremi returned HTTP ${response.status} during booking submission.`,
+          );
+        }
         throw new DooremiError(
           "Dooremi is temporarily unavailable.",
           "api",
