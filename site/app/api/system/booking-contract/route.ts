@@ -1,11 +1,10 @@
-import { getSettings } from "@/db/repository";
+import { getRuntimeEnv } from "@/db";
 import { normalizeBookingTargets } from "@/lib/domain";
 import { DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS } from "@/lib/dooremi-session";
 import {
   data,
   dooremiClient,
   HttpError,
-  requireApiUser,
   requireSameOrigin,
   routeError,
 } from "@/app/_server/api";
@@ -17,15 +16,19 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     requireSameOrigin(request);
-    const user = await requireApiUser();
-    const settings = await getSettings(user.email);
-    if (!settings.facilityId || !settings.facilityCategoryId) {
+    const runtime = getRuntimeEnv();
+    const facilityId = Number(runtime.DOOREMI_FACILITY_ID || 0);
+    const facilityCategoryId = Number(runtime.DOOREMI_CATEGORY_ID || 0);
+    if (!facilityId || !facilityCategoryId) {
       throw new HttpError(409, "Add your facility and category IDs first.");
     }
     const url = new URL(request.url);
     const eventDay = url.searchParams.get("date") ?? "";
     const eventTime = url.searchParams.get("time") ?? "";
-    const schedule = domainSchedule(eventDay, [eventTime], settings);
+    const schedule = domainSchedule(eventDay, [eventTime], {
+      facilityId,
+      facilityCategoryId,
+    });
     normalizeBookingTargets(schedule);
 
     const client = await dooremiClient({
