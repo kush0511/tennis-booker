@@ -6,6 +6,7 @@ import {
   parseAvailabilityPayload,
   singleTargetSchedule,
   type Availability,
+  type BookingPayload,
   type BookingRecord,
   type Schedule,
 } from "./domain.js";
@@ -162,6 +163,9 @@ export interface WarmupResult {
 export interface SingleBookingResult {
   message: string;
   bookingOrderId: number | null;
+  /** Provider round-trip for createOrderV2 only; preview latency is separate. */
+  elapsedMs?: number;
+  serverDate?: Date | null;
 }
 
 export interface CancelBookingResult {
@@ -174,6 +178,18 @@ export interface BookingPreview {
   facilityName: string | null;
   eventDay: string;
   eventTimes: string[];
+}
+
+export interface BookingPreparationResult {
+  message: string;
+  facilityName: string | null;
+  eventDay: string;
+  eventTime: string;
+  bookingFeeRequired: boolean;
+  managementPaymentSelected: boolean;
+  elapsedMs: number;
+  serverDate: Date | null;
+  cached: boolean;
 }
 
 export type BookingCredentialStatus =
@@ -227,6 +243,16 @@ interface RequestResult {
   payload: Record<string, unknown>;
   headers: Headers;
   elapsedMs: number;
+}
+
+type BookingCreatePayload = BookingPayload & {
+  /** The current app sends an empty value when a fee is handled by management. */
+  paymentType?: "";
+};
+
+interface PreparedBooking {
+  body: BookingCreatePayload;
+  result: Omit<BookingPreparationResult, "cached">;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -394,6 +420,7 @@ export class DooremiClient {
   readonly #timeoutMs: number;
   readonly #userAgent: string;
   readonly #monotonicNow: () => number;
+  readonly #preparedBookings = new Map<string, Promise<PreparedBooking>>();
 
   constructor(options: DooremiClientOptions) {
     validateRawToken(options.token);
@@ -483,25 +510,9 @@ export class DooremiClient {
 
   async preview(schedule: Schedule): Promise<BookingPreview> {
     const previews = await Promise.all(
-      normalizeBookingTargets(schedule).map(async (target) => {
-        const single = singleTargetSchedule(schedule, target);
-        const result = await this.#request(DOOREMI_ENDPOINTS.preview, {
-          body: bookingPayload(single),
-        });
-        const content = asRecord(result.payload.content) ?? {};
-        const facility = asRecord(asArray(content.bookingOrderFacilityList)[0]) ?? {};
-        return {
-          message: text(result.payload.msg, "ok"),
-          facilityName:
-            typeof facility.facilityName === "string"
-              ? facility.facilityName
-              : typeof content.facilityName === "string"
-                ? content.facilityName
-                : null,
-          eventDay: text(facility.eventDate, single.eventDay),
-          eventTime: text(facility.eventTime, target.eventTime),
-        };
-      }),
+      normalizeBookingTargets(schedule).map((target) =>
+        this.prepareSingleBooking(singleTargetSchedule(schedule, target)),
+      ),
     );
     return {
       message: previews[0]?.message ?? "ok",
@@ -511,8 +522,63 @@ export class DooremiClient {
     };
   }
 
+  /**
+   * Mirrors the current Dooremi app's required orderPreview -> createOrderV2
+   * flow. This is read-only and caches the derived create payload so a safe
+   * retry never repeats a successful preview or adds latency twice.
+   */
+  async prepareSingleBooking(
+    schedule: Schedule,
+  ): Promise<BookingPreparationResult> {
+    this.assertBookingCredentialCurrent();
+    const { key, single, body } = this.#singleBookingSpec(schedule);
+    const existing = this.#preparedBookings.get(key);
+    if (existing) {
+      return { ...(await existing).result, cached: true };
+    }
+
+    const pending = this.#loadBookingPreparation(single, body);
+    this.#preparedBookings.set(key, pending);
+    try {
+      return { ...(await pending).result, cached: false };
+    } catch (error) {
+      // A rejected or failed preview must be eligible for the transaction's
+      // bounded explicit-rejection retry policy.
+      if (this.#preparedBookings.get(key) === pending) {
+        this.#preparedBookings.delete(key);
+      }
+      throw error;
+    }
+  }
+
   async createSingleBooking(schedule: Schedule): Promise<SingleBookingResult> {
     this.assertBookingCredentialCurrent();
+    const { key } = this.#singleBookingSpec(schedule);
+    // Direct callers are safe too: if the transaction did not explicitly
+    // prepare this target, createSingleBooking performs the preview first.
+    await this.prepareSingleBooking(schedule);
+    const prepared = await this.#preparedBookings.get(key);
+    if (!prepared) {
+      throw new DooremiError("The Dooremi booking preview was not retained.");
+    }
+    const result = await this.#request(DOOREMI_ENDPOINTS.createBooking, {
+      body: prepared.body,
+      ambiguousSubmission: true,
+    });
+    const content = asRecord(result.payload.content) ?? {};
+    return {
+      message: text(content.message, text(result.payload.msg, "ok")),
+      bookingOrderId: numericId(content.bookingOrderId),
+      elapsedMs: result.elapsedMs,
+      serverDate: this.#serverDate(result.headers),
+    };
+  }
+
+  #singleBookingSpec(schedule: Schedule): {
+    key: string;
+    single: Schedule;
+    body: BookingPayload;
+  } {
     const targets = normalizeBookingTargets(schedule);
     if (targets.length !== 1) {
       throw new DooremiError(
@@ -520,15 +586,57 @@ export class DooremiClient {
       );
     }
     const single = singleTargetSchedule(schedule, targets[0]);
-    const result = await this.#request(DOOREMI_ENDPOINTS.createBooking, {
-      body: bookingPayload(single),
-      ambiguousSubmission: true,
+    const body = bookingPayload(single);
+    return {
+      key: `${body.eventDay}\u0000${targets[0].eventTime}\u0000${targets[0].facilityId}`,
+      single,
+      body,
+    };
+  }
+
+  async #loadBookingPreparation(
+    single: Schedule,
+    baseBody: BookingPayload,
+  ): Promise<PreparedBooking> {
+    const result = await this.#request(DOOREMI_ENDPOINTS.preview, {
+      body: baseBody,
     });
     const content = asRecord(result.payload.content) ?? {};
+    const facility =
+      asRecord(asArray(content.bookingOrderFacilityList)[0]) ?? {};
+    // Match the current React Native app's JavaScript truthiness check. When a
+    // booking fee is present, its "via Management" path sends paymentType: "".
+    const bookingFeeRequired = Boolean(content.bookingFeeAmount);
+    const body: BookingCreatePayload = bookingFeeRequired
+      ? { ...baseBody, paymentType: "" }
+      : baseBody;
     return {
-      message: text(content.message, text(result.payload.msg, "ok")),
-      bookingOrderId: numericId(content.bookingOrderId),
+      body,
+      result: {
+        message: text(result.payload.msg, "ok"),
+        facilityName:
+          typeof facility.facilityName === "string"
+            ? facility.facilityName
+            : typeof content.facilityName === "string"
+              ? content.facilityName
+              : null,
+        eventDay: text(facility.eventDate, single.eventDay),
+        eventTime: text(
+          facility.eventTime,
+          normalizeBookingTargets(single)[0].eventTime,
+        ),
+        bookingFeeRequired,
+        managementPaymentSelected: bookingFeeRequired,
+        elapsedMs: result.elapsedMs,
+        serverDate: this.#serverDate(result.headers),
+      },
     };
+  }
+
+  #serverDate(headers: Headers): Date | null {
+    const header = headers.get("date");
+    const parsed = header ? new Date(header) : null;
+    return parsed && !Number.isNaN(parsed.valueOf()) ? parsed : null;
   }
 
   async bookingHistory(
@@ -699,7 +807,7 @@ export class DooremiClient {
         if (isAuthenticationMessage(message)) throw new AuthenticationError();
         if (isClientUpgradeMessage(message)) {
           throw new ClientUpgradeRequiredError(
-            `Dooremi rejected the booking credential: ${message} Background sign-in must renew it before retrying.`,
+            `Dooremi rejected the current booking/payment flow: ${message} This response does not by itself prove that the token expired, so Court Signal did not blindly retry it.`,
             response.status,
             serverDate,
             elapsedMs,

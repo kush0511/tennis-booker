@@ -128,6 +128,74 @@ test("credential incompatibility stops before history, warmup, cancellation, or 
   assert.deepEqual(calls, ["credential"]);
 });
 
+test("preview rejection uses the bounded retry policy before any create request", async () => {
+  const timeline: string[] = [];
+  const timing: string[] = [];
+  let previewAttempts = 0;
+  const client: BookingTransactionClient = {
+    warmup: async () => {
+      timeline.push("warm");
+      return { elapsedMs: 8, serverDate: null };
+    },
+    bookingHistory: async () => [],
+    cancelBooking: async (bookingId) => ({ message: "cancelled", bookingId }),
+    prepareSingleBooking: async (schedule) => {
+      previewAttempts += 1;
+      timeline.push(`preview:${previewAttempts}`);
+      if (previewAttempts === 1) {
+        throw new DooremiError(
+          "provider opening edge",
+          "rejected",
+          200,
+          null,
+          12,
+        );
+      }
+      return {
+        message: "ok",
+        facilityName: "Tennis Court",
+        eventDay: schedule.eventDay,
+        eventTime: schedule.eventTimes?.[0] ?? "",
+        bookingFeeRequired: true,
+        managementPaymentSelected: true,
+        elapsedMs: 9,
+        serverDate: null,
+        cached: false,
+      };
+    },
+    createSingleBooking: async () => {
+      timeline.push("create");
+      return {
+        message: "ok",
+        bookingOrderId: 903,
+        elapsedMs: 11,
+        serverDate: null,
+      };
+    },
+  };
+
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-08-21",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      rejectedSubmissionRetryDelaysMilliseconds: [0],
+      sleep: noSleep,
+      onTiming: (message) => timing.push(message),
+    },
+  );
+
+  assert.deepEqual(timeline, ["warm", "preview:1", "preview:2", "create"]);
+  assert.deepEqual(result.bookingOrderIds, [903]);
+  assert.ok(timing.some((message) => /safe retry 1\/1/.test(message)));
+  assert.ok(timing.some((message) => /preview returned in 9ms/.test(message)));
+  assert.ok(timing.some((message) => /create response 11ms/.test(message)));
+});
+
 test("an accepted cancellation is polled without being submitted again", async () => {
   const booking = confirmedBooking(100);
   const cancelCalls: number[] = [];

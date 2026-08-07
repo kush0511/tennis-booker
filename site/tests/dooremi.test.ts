@@ -31,6 +31,24 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+function bookingPreviewResponse(bookingFeeAmount: unknown = 0): Response {
+  return jsonResponse({
+    status: 0,
+    msg: "ok",
+    content: {
+      bookingFeeAmount,
+      hasPayNow: true,
+      bookingOrderFacilityList: [
+        {
+          facilityName: "Tennis Court",
+          eventDate: "2026-07-17",
+          eventTime: "07:00-08:00",
+        },
+      ],
+    },
+  });
+}
+
 test("background sign-in uses the current app contract without authorization headers", async () => {
   const requests: Array<{ url: URL; init?: RequestInit }> = [];
   const token = tokenWithCreatedAt(Date.parse("2026-08-08T04:00:00Z") / 1_000);
@@ -127,12 +145,16 @@ test("the server client sends the captured request shape without exposing its to
   );
 });
 
-test("a single booking call contains exactly one session and is never retried", async () => {
-  const requests: RequestInit[] = [];
+test("a booking mirrors the current app preview and management-payment flow", async () => {
+  const requests: Array<{ url: URL; init: RequestInit }> = [];
   const client = new DooremiClient({
     token: "hosted-secret-value",
-    fetch: async (_input, init) => {
-      requests.push(init ?? {});
+    fetch: async (input, init) => {
+      const request = { url: new URL(String(input)), init: init ?? {} };
+      requests.push(request);
+      if (request.url.pathname.endsWith("/orderPreview")) {
+        return bookingPreviewResponse(2.5);
+      }
       return jsonResponse({
         status: 0,
         msg: "ok",
@@ -146,19 +168,73 @@ test("a single booking call contains exactly one session and is never retried", 
     facilityId: 9001,
   });
   assert.equal(result.bookingOrderId, 901);
-  assert.equal(requests.length, 1);
-  assert.deepEqual(JSON.parse(String(requests[0].body)), {
+  assert.equal(result.elapsedMs !== undefined, true);
+  assert.deepEqual(
+    requests.map((request) => request.url.pathname),
+    ["/user/booking/orderPreview", "/user/booking/createOrderV2"],
+  );
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
     eventDay: "2026-07-17",
     bookingOrderFacilityList: [
       { facilityId: 9001, eventTime: "07:00-08:00" },
     ],
   });
+  assert.deepEqual(JSON.parse(String(requests[1].init.body)), {
+    eventDay: "2026-07-17",
+    bookingOrderFacilityList: [
+      { facilityId: 9001, eventTime: "07:00-08:00" },
+    ],
+    paymentType: "",
+  });
+});
+
+test("a successful preview is cached and fee-free bookings omit paymentType", async () => {
+  const paths: string[] = [];
+  const bodies: unknown[] = [];
+  const client = new DooremiClient({
+    token: "hosted-secret-value",
+    fetch: async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      bodies.push(JSON.parse(String(init?.body)));
+      return path.endsWith("/orderPreview")
+        ? bookingPreviewResponse(0)
+        : jsonResponse({
+            status: 0,
+            msg: "ok",
+            content: { message: "Confirmed", bookingOrderId: 902 },
+          });
+    },
+  });
+  const schedule = {
+    eventDay: "2026-07-17",
+    eventTimes: ["07:00-08:00"],
+    facilityId: 9001,
+  };
+  const first = await client.prepareSingleBooking(schedule);
+  const second = await client.prepareSingleBooking(schedule);
+  const result = await client.createSingleBooking(schedule);
+
+  assert.equal(first.cached, false);
+  assert.equal(second.cached, true);
+  assert.equal(result.bookingOrderId, 902);
+  assert.deepEqual(paths, [
+    "/user/booking/orderPreview",
+    "/user/booking/createOrderV2",
+  ]);
+  assert.equal(Object.hasOwn(bodies[1] as object, "paymentType"), false);
 });
 
 test("unreadable create responses are explicitly ambiguous", async () => {
+  let calls = 0;
   const client = new DooremiClient({
     token: "hosted-secret-value",
-    fetch: async () => new Response("not-json", { status: 200 }),
+    fetch: async () => {
+      calls += 1;
+      return calls === 1
+        ? bookingPreviewResponse()
+        : new Response("not-json", { status: 200 });
+    },
   });
   await assert.rejects(
     client.createSingleBooking({
@@ -171,9 +247,15 @@ test("unreadable create responses are explicitly ambiguous", async () => {
 });
 
 test("server errors during submission are ambiguous and cannot be blindly retried", async () => {
+  let calls = 0;
   const client = new DooremiClient({
     token: "hosted-secret-value",
-    fetch: async () => jsonResponse({ status: 1, msg: "error" }, 503),
+    fetch: async () => {
+      calls += 1;
+      return calls === 1
+        ? bookingPreviewResponse()
+        : jsonResponse({ status: 1, msg: "error" }, 503);
+    },
   });
   await assert.rejects(
     client.createSingleBooking({

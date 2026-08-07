@@ -13,6 +13,7 @@ import {
 import {
   DooremiError,
   safeErrorMessage,
+  type BookingPreparationResult,
   type CancelBookingResult,
   type SingleBookingResult,
   type WarmupResult,
@@ -180,6 +181,13 @@ export class RebookingSubmissionError extends Error {
 export interface BookingTransactionClient {
   /** Read-only local credential inspection; must run before any cancellation. */
   assertBookingCredentialCurrent?(): void;
+  /**
+   * Runs Dooremi's read-only order preview and derives the current payment
+   * context. It is intentionally invoked at the calibrated fire boundary.
+   */
+  prepareSingleBooking?(
+    schedule: Schedule,
+  ): Promise<BookingPreparationResult>;
   warmup(options?: { timeoutMs?: number }): Promise<WarmupResult>;
   bookingHistory(options?: {
     pageSize?: number;
@@ -662,14 +670,29 @@ async function createSingleBookingWithSafeRetry(
       ? options.now().valueOf() - options.releaseAt.valueOf()
       : null;
     options.onTiming?.(
-      `booking attempt ${attempt + 1}/${options.retryDelaysMilliseconds.length + 1} for ${target.eventDay} ${target.eventTime} transmitted${startedOffset === null ? "" : ` at T${startedOffset >= 0 ? "+" : ""}${Math.round(startedOffset)}ms`}`,
+      `booking flow attempt ${attempt + 1}/${options.retryDelaysMilliseconds.length + 1} for ${target.eventDay} ${target.eventTime} started${startedOffset === null ? "" : ` at T${startedOffset >= 0 ? "+" : ""}${Math.round(startedOffset)}ms`}`,
     );
     try {
-      const result = await client.createSingleBooking(
-        singleTargetSchedule(schedule, target),
-      );
+      const single = singleTargetSchedule(schedule, target);
+      const preparation = await client.prepareSingleBooking?.(single);
+      if (preparation) {
+        const previewTiming = preparation.cached
+          ? "reused the successful cached preview"
+          : `preview returned in ${preparation.elapsedMs}ms`;
+        const paymentContext = preparation.managementPaymentSelected
+          ? "management payment context selected"
+          : "no payment field required";
+        options.onTiming?.(
+          `booking flow attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ${previewTiming}; ${paymentContext}; create transmit follows`,
+        );
+      }
+      const result = await client.createSingleBooking(single);
+      const createTiming =
+        result.elapsedMs === undefined
+          ? ""
+          : `; create response ${Math.round(result.elapsedMs)}ms`;
       options.onTiming?.(
-        `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} confirmed in ${Math.round(options.monotonicNow() - started)}ms${result.bookingOrderId === null ? "" : ` as order ${result.bookingOrderId}`}`,
+        `booking flow attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} confirmed in ${Math.round(options.monotonicNow() - started)}ms${createTiming}${result.bookingOrderId === null ? "" : ` as order ${result.bookingOrderId}`}`,
       );
       return result;
     } catch (error) {
@@ -691,7 +714,7 @@ async function createSingleBookingWithSafeRetry(
         attempt >= options.retryDelaysMilliseconds.length
       ) {
         options.onTiming?.(
-          `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ended in ${elapsed}ms with ${normalized instanceof DooremiError ? normalized.code : "unexpected_error"}${providerClockDetail}: ${safeErrorMessage(normalized)}`,
+          `booking flow attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ended in ${elapsed}ms with ${normalized instanceof DooremiError ? normalized.code : "unexpected_error"}${providerClockDetail}: ${safeErrorMessage(normalized)}`,
         );
         throw normalized;
       }
