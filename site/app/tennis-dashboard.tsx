@@ -64,6 +64,7 @@ type SystemHealth = {
     cancellationSeconds: number;
     fireDelayMilliseconds: number;
     maximumTransmissionLeadMilliseconds: number;
+    maximumEarlySubmissionMilliseconds: number;
     preCancellationProbeCount: number;
     preCancellationMinimumSuccesses: number;
     latencyProbeCount: number;
@@ -1010,7 +1011,7 @@ export function TennisDashboard({
               {String(systemHealth?.releaseTiming.minute ?? settings.releaseMinute).padStart(2, "0")} SGT
             </strong>
             <p>
-              {systemHealth?.releaseTiming.leadDays ?? settings.bookingLeadDays} days before play · requires {systemHealth?.releaseTiming.preCancellationMinimumSuccesses ?? 2}/{systemHealth?.releaseTiming.preCancellationProbeCount ?? 3} healthy probes before cancellation · recalibrates from {systemHealth?.releaseTiming.latencyProbeCount ?? 5} near-release samples at p{Math.round((systemHealth?.releaseTiming.latencyPercentile ?? 0.75) * 100)} · applies up to {systemHealth?.releaseTiming.maximumTransmissionLeadMilliseconds ?? 250}ms network compensation · retries {systemHealth?.releaseTiming.rejectedSubmissionRetries ?? 4} confirmed rejections.
+              {systemHealth?.releaseTiming.leadDays ?? settings.bookingLeadDays} days before play · requires {systemHealth?.releaseTiming.preCancellationMinimumSuccesses ?? 2}/{systemHealth?.releaseTiming.preCancellationProbeCount ?? 3} healthy probes before cancellation · recalibrates from {systemHealth?.releaseTiming.latencyProbeCount ?? 10} near-release samples at p{Math.round((systemHealth?.releaseTiming.latencyPercentile ?? 0.75) * 100)} and records provider clock evidence · caps the first transmit at T−{systemHealth?.releaseTiming.maximumEarlySubmissionMilliseconds ?? 5}ms · retries {systemHealth?.releaseTiming.rejectedSubmissionRetries ?? 6} confirmed rejections.
             </p>
           </section>
 

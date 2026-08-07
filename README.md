@@ -202,12 +202,15 @@ runner still performs the exact release timing and D1 lease claiming; the macOS
 runner remains an independent fallback. The hosted runner prepares at T-60 but
 waits until the configured T-15 boundary to run three read-only latency probes.
 At least two must succeed before any existing booking is cancelled. It then
-samples latency five more times near release, derives the transmit lead from the
-current p75 RTT (with a bounded fallback), and retries confirmed Dooremi
-rejections on a 40/90/200/450ms backoff. Ambiguous submissions are never blindly
-resent; booking history is polled four times to reconcile a confirmation safely.
-All due users arm concurrently. The website does not label a release outside
-the external wake window as armed.
+samples latency ten more times near release, derives the transmit lead from the
+current p75 RTT, records provider Date-header clock evidence, and caps the first
+transmit at T-5ms. Confirmed Dooremi rejections use a bounded
+0/0/25/100/400/1000ms retry ladder. Ambiguous submissions are never blindly
+resent; booking history is polled at four absolute offsets to reconcile a
+confirmation safely. A final explicit rejection is checked against both
+booking history and live availability before the run is classified. All due
+users arm concurrently. The website does not label a release outside the
+external wake window as armed.
 
 The earlier Swift prototype is retained under `Sources/`; the installed
 Command Line Tools currently contain a compiler/SDK mismatch, so the installer

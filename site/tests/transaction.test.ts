@@ -13,6 +13,7 @@ import {
   type WarmupResult,
 } from "../lib/dooremi.js";
 import {
+  BookingSubmissionError,
   LatencyPreflightError,
   PartialBookingError,
   RebookingSubmissionError,
@@ -186,8 +187,12 @@ class TransactionFake implements BookingTransactionClient {
   readonly active = new Map<number, BookingRecord>();
   readonly failTimes = new Set<string>();
   readonly ambiguousConfirmedTimes = new Set<string>();
+  readonly rejectedConfirmedTimes = new Set<string>();
   readonly rejectedAttempts = new Map<string, number>();
+  readonly availabilityByTime = new Map<string, boolean>();
   readonly warmupSamples: number[] = [];
+  readonly warmupServerDates: Array<Date | null> = [];
+  availabilityCalls = 0;
   warmupFailuresRemaining = 0;
   nextOrderId = 900;
 
@@ -199,7 +204,7 @@ class TransactionFake implements BookingTransactionClient {
     }
     return {
       elapsedMs: this.warmupSamples.shift() ?? 1,
-      serverDate: null,
+      serverDate: this.warmupServerDates.shift() ?? null,
     };
   }
 
@@ -221,9 +226,19 @@ class TransactionFake implements BookingTransactionClient {
     const remainingRejections = this.rejectedAttempts.get(time) ?? 0;
     if (remainingRejections > 0) {
       this.rejectedAttempts.set(time, remainingRejections - 1);
+      if (this.rejectedConfirmedTimes.has(time)) {
+        this.nextOrderId += 1;
+        this.active.set(
+          this.nextOrderId,
+          confirmedBooking(this.nextOrderId, [time], schedule.eventDay),
+        );
+      }
       throw new DooremiError(
         "Dooremi rejected the request (1): Unexpected error",
         "rejected",
+        200,
+        new Date("2026-07-03T03:59:59.000Z"),
+        14,
       );
     }
     if (this.failTimes.has(time)) {
@@ -242,6 +257,21 @@ class TransactionFake implements BookingTransactionClient {
 
   fork(): BookingTransactionClient {
     return this;
+  }
+
+  async availability(eventDay: string, facilityId: number) {
+    this.availabilityCalls += 1;
+    return {
+      facilityId,
+      facilityName: "Tennis Court",
+      maximumSelectableSlots: 6,
+      slots: [...this.availabilityByTime].map(([eventTime, available]) => ({
+        id: null,
+        facilityId,
+        eventTime,
+        available,
+      })),
+    };
   }
 }
 
@@ -423,6 +453,70 @@ test("submission timing uses a recent p75 sample set instead of a fixed cap", ()
   assert.equal(timing.usedFallback, false);
 });
 
+test("the early-send guard caps an RTT estimate that would transmit too soon", () => {
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  const timing = compensatedSubmissionTiming(
+    release,
+    10,
+    [47, 49, 51, 51, 58],
+    {
+      maximumTransmissionLeadMilliseconds: 250,
+      maximumEarlySubmissionMilliseconds: 5,
+      latencyPercentile: 0.75,
+      minimumSampleCount: 5,
+      fallbackRoundTripMilliseconds: 120,
+    },
+  );
+  assert.equal(timing.uncappedTransmissionLeadMilliseconds, 26);
+  assert.equal(timing.transmissionLeadMilliseconds, 15);
+  assert.equal(timing.fireAt.valueOf(), release.valueOf() - 5);
+  assert.equal(timing.earlyTransmissionCapped, true);
+});
+
+test("near-release probes record non-monotonic provider Date-header evidence", async () => {
+  const client = new TransactionFake();
+  client.warmupSamples.push(20, 20, 20, 20, 20);
+  client.warmupServerDates.push(
+    null,
+    new Date(5_000),
+    new Date(6_000),
+    new Date(5_000),
+    null,
+  );
+  const release = new Date(10_000);
+  let current = 6_000;
+  const timing: string[] = [];
+  await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      warmupPasses: 2,
+      secondWarmupAt: new Date(current),
+      releaseAt: release,
+      latencyProbeCount: 3,
+      latencyProbeIntervalMilliseconds: 75,
+      latencyProbeTimeoutMilliseconds: 500,
+      latencyCalibrationCutoffMilliseconds: 1_500,
+      minimumLatencySamples: 3,
+      now: () => new Date(current),
+      sleep: async (milliseconds) => {
+        current += milliseconds;
+      },
+      onTiming: (message) => timing.push(message),
+    },
+  );
+  const evidence = timing.find((message) =>
+    message.includes("provider clock evidence"),
+  );
+  assert.match(evidence ?? "", /1 backward second transition/);
+  assert.match(evidence ?? "", /T-5000ms, T-4000ms/);
+});
+
 test("the transaction fires from its near-release latency calibration", async () => {
   const client = new TransactionFake();
   client.warmupSamples.push(90, 80, 100, 120, 140, 400, 110);
@@ -521,6 +615,87 @@ test("an explicit rejection follows the complete bounded retry ladder", async ()
   assert.ok(timing.some((message) => message.includes("returned in")));
 });
 
+test("the hosted retry train closes the opening gap and covers lagging provider clocks", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 6);
+  const sleeps: number[] = [];
+  const timing: string[] = [];
+  const release = new Date("2026-07-03T04:00:00.000Z");
+  let current = release.valueOf() - 5;
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+      releaseAt: release,
+      maximumEarlySubmissionMilliseconds: 5,
+      rejectedSubmissionRetryDelaysMilliseconds: [0, 0, 25, 100, 400, 1_000],
+      rejectedSubmissionRetryStaggerMilliseconds: 0,
+      now: () => new Date(current),
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        current += milliseconds;
+      },
+      onTiming: (message) => timing.push(message),
+    },
+  );
+  assert.equal(result.bookingOrderIds.length, 1);
+  assert.equal(client.submitted.length, 7);
+  assert.deepEqual(sleeps, [25, 100, 400, 1_000]);
+  assert.ok(
+    timing.some((message) =>
+      message.includes("provider Date-header second T-1000ms"),
+    ),
+  );
+});
+
+test("an explicit rejection is reconciled from history before it is declared failed", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 1);
+  client.rejectedConfirmedTimes.add("19:00-20:00");
+  const result = await executeBookingTransaction(
+    client,
+    {
+      eventDay: "2026-07-17",
+      eventTimes: ["19:00-20:00"],
+      facilityId: 9001,
+    },
+    {
+      activeBookings: [],
+    },
+  );
+  assert.equal(result.bookingOrderIds.length, 1);
+  assert.equal(client.submitted.length, 1);
+  assert.match(result.results[0].result.message, /booking history/i);
+});
+
+test("a final rejection records whether the target became booked", async () => {
+  const client = new TransactionFake();
+  client.rejectedAttempts.set("19:00-20:00", 1);
+  client.availabilityByTime.set("19:00-20:00", false);
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-07-17",
+        eventTimes: ["19:00-20:00"],
+        facilityId: 9001,
+        facilityCategoryId: 1216,
+      },
+      { activeBookings: [] },
+    ),
+    (error: unknown) =>
+      error instanceof BookingSubmissionError &&
+      error.availabilityEvidence[0]?.state === "booked" &&
+      /Post-failure availability showed 1 booked/.test(error.message),
+  );
+  assert.equal(client.availabilityCalls, 1);
+});
+
 test("the rejection retry ladder stops after five total attempts", async () => {
   const client = new TransactionFake();
   client.rejectedAttempts.set("19:00-20:00", 10);
@@ -542,7 +717,9 @@ test("the rejection retry ladder stops after five total attempts", async () => {
       },
     ),
     (error: unknown) =>
-      error instanceof DooremiError && error.code === "rejected",
+      error instanceof BookingSubmissionError &&
+      error.failures[0]?.error instanceof DooremiError &&
+      error.failures[0].error.code === "rejected",
   );
   assert.equal(client.submitted.length, 5);
   assert.deepEqual(sleeps, [40, 90, 200, 450]);
@@ -604,6 +781,7 @@ test("an ambiguous response is reconciled from history without a duplicate submi
 test("an unresolved ambiguous response is polled but never blindly retried", async () => {
   const client = new TransactionFake();
   client.failTimes.add("19:00-20:00");
+  const sleeps: number[] = [];
   await assert.rejects(
     executeBookingTransaction(
       client,
@@ -615,16 +793,21 @@ test("an unresolved ambiguous response is polled but never blindly retried", asy
       {
         activeBookings: [],
         ambiguousReconciliationDelaysMilliseconds: [0, 250, 750],
-        sleep: noSleep,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        },
       },
     ),
-    AmbiguousSubmissionError,
+    (error: unknown) =>
+      error instanceof BookingSubmissionError &&
+      error.failures[0]?.error instanceof AmbiguousSubmissionError,
   );
   assert.equal(client.submitted.length, 1);
   assert.equal(
     client.timeline.filter((item) => item === "history").length,
     3,
   );
+  assert.deepEqual(sleeps, [250, 500]);
 });
 
 test("a partial result records successes and never retries an ambiguous target", async () => {

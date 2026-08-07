@@ -5,6 +5,7 @@ import {
   normalizeBookingTargets,
   normalizeEventDay,
   singleTargetSchedule,
+  type Availability,
   type BookingRecord,
   type BookingTarget,
   type Schedule,
@@ -16,6 +17,27 @@ import {
   type SingleBookingResult,
   type WarmupResult,
 } from "./dooremi.js";
+
+export type FailureAvailabilityState = "available" | "booked" | "missing";
+
+export interface FailureAvailabilityObservation {
+  target: BookingTarget;
+  state: FailureAvailabilityState;
+}
+
+function availabilityEvidenceMessage(
+  observations: readonly FailureAvailabilityObservation[],
+): string {
+  if (observations.length === 0) return "";
+  const available = observations.filter((item) => item.state === "available").length;
+  const booked = observations.filter((item) => item.state === "booked").length;
+  const missing = observations.filter((item) => item.state === "missing").length;
+  return ` Post-failure availability showed ${booked} booked, ${available} still available${missing ? `, and ${missing} missing from the provider response` : ""}.`;
+}
+
+function sentence(value: string): string {
+  return /[.!?]$/.test(value) ? value : `${value}.`;
+}
 
 export class CancellationError extends Error {
   readonly pendingBookingIds: number[];
@@ -61,39 +83,46 @@ export class PartialBookingError extends Error {
   readonly failures: FailedSubmission[];
   readonly submitSkewMs: number;
   readonly cancelledBookingIds: number[];
+  readonly availabilityEvidence: FailureAvailabilityObservation[];
 
   constructor(
     results: readonly ConfirmedSubmission[],
     failures: readonly FailedSubmission[],
     submitSkewMs: number,
     cancelledBookingIds: readonly number[],
+    availabilityEvidence: readonly FailureAvailabilityObservation[] = [],
   ) {
     super(
-      `${results.length} of ${results.length + failures.length} requests returned a success. Refresh booking history before retrying; one or more requests failed or had an ambiguous response.`,
+      `${results.length} of ${results.length + failures.length} requests returned a success. Refresh booking history before retrying; one or more requests failed or had an ambiguous response.${availabilityEvidenceMessage(availabilityEvidence)}`,
     );
     this.name = "PartialBookingError";
     this.results = [...results];
     this.failures = [...failures];
     this.submitSkewMs = submitSkewMs;
     this.cancelledBookingIds = [...cancelledBookingIds];
+    this.availabilityEvidence = [...availabilityEvidence];
   }
 
   get bookingOrderIds(): number[] {
-    return this.results
-      .map((item) => item.result.bookingOrderId)
-      .filter((id): id is number => id !== null);
+    return [
+      ...new Set(
+        this.results
+          .map((item) => item.result.bookingOrderId)
+          .filter((id): id is number => id !== null),
+      ),
+    ];
   }
 }
 
-export class RebookingSubmissionError extends Error {
-  readonly cancelledBookingIds: number[];
+export class BookingSubmissionError extends Error {
   readonly failures: FailedSubmission[];
   readonly submitSkewMs: number;
+  readonly availabilityEvidence: FailureAvailabilityObservation[];
 
   constructor(
-    cancelledBookingIds: readonly number[],
     failures: readonly FailedSubmission[],
     submitSkewMs: number,
+    availabilityEvidence: readonly FailureAvailabilityObservation[] = [],
   ) {
     const targets = failures
       .map((failure) => `${failure.target.eventDay} ${failure.target.eventTime}`)
@@ -102,12 +131,45 @@ export class RebookingSubmissionError extends Error {
       ...new Set(failures.map((failure) => safeErrorMessage(failure.error))),
     ].join("; ");
     super(
-      `Active bookings were cancelled, but no replacement request was confirmed. ${failures.length} request${failures.length === 1 ? "" : "s"} failed for ${targets}: ${reasons} Refresh booking history now.`,
+      `No booking request was confirmed. ${failures.length} target${failures.length === 1 ? "" : "s"} failed for ${targets}: ${sentence(reasons)}${availabilityEvidenceMessage(availabilityEvidence)} Refresh booking history before trying again.`,
+    );
+    this.name = "BookingSubmissionError";
+    this.failures = [...failures];
+    this.submitSkewMs = submitSkewMs;
+    this.availabilityEvidence = [...availabilityEvidence];
+  }
+
+  get bookingTargets(): BookingTarget[] {
+    return this.failures.map((failure) => failure.target);
+  }
+}
+
+export class RebookingSubmissionError extends Error {
+  readonly cancelledBookingIds: number[];
+  readonly failures: FailedSubmission[];
+  readonly submitSkewMs: number;
+  readonly availabilityEvidence: FailureAvailabilityObservation[];
+
+  constructor(
+    cancelledBookingIds: readonly number[],
+    failures: readonly FailedSubmission[],
+    submitSkewMs: number,
+    availabilityEvidence: readonly FailureAvailabilityObservation[] = [],
+  ) {
+    const targets = failures
+      .map((failure) => `${failure.target.eventDay} ${failure.target.eventTime}`)
+      .join(", ");
+    const reasons = [
+      ...new Set(failures.map((failure) => safeErrorMessage(failure.error))),
+    ].join("; ");
+    super(
+      `Active bookings were cancelled, but no replacement request was confirmed. ${failures.length} request${failures.length === 1 ? "" : "s"} failed for ${targets}: ${sentence(reasons)}${availabilityEvidenceMessage(availabilityEvidence)} Refresh booking history now.`,
     );
     this.name = "RebookingSubmissionError";
     this.cancelledBookingIds = [...cancelledBookingIds];
     this.failures = [...failures];
     this.submitSkewMs = submitSkewMs;
+    this.availabilityEvidence = [...availabilityEvidence];
   }
 
   get bookingTargets(): BookingTarget[] {
@@ -123,6 +185,11 @@ export interface BookingTransactionClient {
   }): Promise<BookingRecord[]>;
   cancelBooking(bookingId: number): Promise<CancelBookingResult>;
   createSingleBooking(schedule: Schedule): Promise<SingleBookingResult>;
+  availability?(
+    eventDay: string,
+    facilityId: number,
+    facilityCategoryId: number,
+  ): Promise<Availability>;
   fork?(): BookingTransactionClient;
 }
 
@@ -286,6 +353,8 @@ export interface ExecuteBookingTransactionOptions {
   releaseAt?: Date;
   fireDelayMilliseconds?: number;
   maximumTransmissionLeadMilliseconds?: number;
+  /** Never schedule the first transmit earlier than this many milliseconds. */
+  maximumEarlySubmissionMilliseconds?: number;
   /** Retry only explicit JSON rejections, never ambiguous submissions. */
   rejectedSubmissionRetries?: number;
   rejectedSubmissionRetryDelayMilliseconds?: number;
@@ -344,6 +413,53 @@ async function warmClients(
   return elapsed;
 }
 
+interface LatencyProbeObservation {
+  elapsedMs: number;
+  receivedAtMs: number;
+  serverDateMs: number | null;
+}
+
+interface LatencyProbeBatch {
+  elapsedMs: number[];
+  observations: LatencyProbeObservation[];
+}
+
+function providerDateEvidence(
+  observations: readonly LatencyProbeObservation[],
+  releaseAt?: Date,
+): string | null {
+  const dated = observations.filter(
+    (item): item is LatencyProbeObservation & { serverDateMs: number } =>
+      item.serverDateMs !== null,
+  );
+  if (dated.length === 0) return null;
+  const maximumProvenLagMilliseconds = Math.max(
+    0,
+    ...dated.map(
+      (item) => item.receivedAtMs - (item.serverDateMs + 999),
+    ),
+  );
+  let regressions = 0;
+  for (let index = 1; index < dated.length; index += 1) {
+    if (dated[index].serverDateMs < dated[index - 1].serverDateMs) {
+      regressions += 1;
+    }
+  }
+  const releaseOffsets = releaseAt
+    ? [
+        ...new Set(
+          dated.map(
+            (item) => item.serverDateMs - releaseAt.valueOf(),
+          ),
+        ),
+      ]
+        .sort((left, right) => left - right)
+        .map((offset) => `T${offset >= 0 ? "+" : ""}${offset}ms`)
+        .join(", ")
+    : null;
+  return `${dated.length}/${observations.length} Date headers; maximum proven clock lag ${maximumProvenLagMilliseconds}ms; ${regressions} backward second transition${regressions === 1 ? "" : "s"}${releaseOffsets ? `; header seconds versus release ${releaseOffsets}` : ""}`;
+}
+
 async function collectLatencyProbes(
   client: BookingTransactionClient,
   options: {
@@ -353,11 +469,13 @@ async function collectLatencyProbes(
     sleep: Sleep;
     now: () => Date;
     deadline?: Date;
+    releaseAt?: Date;
     label: string;
     onTiming?: (message: string) => void;
   },
-): Promise<number[]> {
+): Promise<LatencyProbeBatch> {
   const elapsed: number[] = [];
+  const observations: LatencyProbeObservation[] = [];
   for (let index = 0; index < options.count; index += 1) {
     const remaining = options.deadline
       ? options.deadline.valueOf() - options.now().valueOf()
@@ -375,6 +493,11 @@ async function collectLatencyProbes(
     try {
       const result = await client.warmup({ timeoutMs: timeoutMilliseconds });
       elapsed.push(result.elapsedMs);
+      observations.push({
+        elapsedMs: result.elapsedMs,
+        receivedAtMs: options.now().valueOf(),
+        serverDateMs: result.serverDate?.valueOf() ?? null,
+      });
     } catch (error) {
       options.onTiming?.(
         `${options.label} probe ${index + 1} warning: ${safeErrorMessage(error)}`,
@@ -391,7 +514,11 @@ async function collectLatencyProbes(
   options.onTiming?.(
     `${options.label} collected ${elapsed.length}/${options.count} RTT samples${elapsed.length ? ` (${elapsed.join(", ")}ms)` : ""}`,
   );
-  return elapsed;
+  const dateEvidence = providerDateEvidence(observations, options.releaseAt);
+  if (dateEvidence) {
+    options.onTiming?.(`${options.label} provider clock evidence: ${dateEvidence}`);
+  }
+  return { elapsedMs: elapsed, observations };
 }
 
 async function sleepUntil(
@@ -420,11 +547,14 @@ export type CompensatedSubmissionTiming = {
   latencyPercentile: number;
   sampleCount: number;
   usedFallback: boolean;
+  uncappedTransmissionLeadMilliseconds: number;
   transmissionLeadMilliseconds: number;
+  earlyTransmissionCapped: boolean;
 };
 
 export type SubmissionTimingPolicy = {
   maximumTransmissionLeadMilliseconds?: number;
+  maximumEarlySubmissionMilliseconds?: number;
   latencyPercentile?: number;
   minimumSampleCount?: number;
   fallbackRoundTripMilliseconds?: number;
@@ -448,6 +578,8 @@ export function compensatedSubmissionTiming(
 ): CompensatedSubmissionTiming {
   const maximumTransmissionLeadMilliseconds =
     policy.maximumTransmissionLeadMilliseconds ?? 250;
+  const maximumEarlySubmissionMilliseconds =
+    policy.maximumEarlySubmissionMilliseconds ?? Number.POSITIVE_INFINITY;
   const latencyPercentile = policy.latencyPercentile ?? 0.75;
   const minimumSampleCount = policy.minimumSampleCount ?? 5;
   const fallbackRoundTripMilliseconds =
@@ -458,6 +590,9 @@ export function compensatedSubmissionTiming(
     fireDelayMilliseconds < 0 ||
     !Number.isFinite(maximumTransmissionLeadMilliseconds) ||
     maximumTransmissionLeadMilliseconds < 0 ||
+    (maximumEarlySubmissionMilliseconds !== Number.POSITIVE_INFINITY &&
+      (!Number.isFinite(maximumEarlySubmissionMilliseconds) ||
+        maximumEarlySubmissionMilliseconds < 0)) ||
     !Number.isFinite(latencyPercentile) ||
     latencyPercentile < 0.5 ||
     latencyPercentile > 1 ||
@@ -478,9 +613,13 @@ export function compensatedSubmissionTiming(
     measured ?? 0,
     usedFallback ? fallbackRoundTripMilliseconds : 0,
   );
-  const transmissionLeadMilliseconds = Math.min(
+  const uncappedTransmissionLeadMilliseconds = Math.min(
     maximumTransmissionLeadMilliseconds,
     Math.max(0, Math.round(calibratedRoundTripMilliseconds / 2)),
+  );
+  const transmissionLeadMilliseconds = Math.min(
+    uncappedTransmissionLeadMilliseconds,
+    fireDelayMilliseconds + maximumEarlySubmissionMilliseconds,
   );
   return {
     fireAt: new Date(
@@ -493,7 +632,10 @@ export function compensatedSubmissionTiming(
     latencyPercentile,
     sampleCount: samples.length,
     usedFallback,
+    uncappedTransmissionLeadMilliseconds,
     transmissionLeadMilliseconds,
+    earlyTransmissionCapped:
+      transmissionLeadMilliseconds < uncappedTransmissionLeadMilliseconds,
   };
 }
 
@@ -531,13 +673,23 @@ async function createSingleBookingWithSafeRetry(
     } catch (error) {
       const normalized = toError(error);
       const elapsed = Math.round(options.monotonicNow() - started);
+      const providerDateOffset =
+        normalized instanceof DooremiError &&
+        normalized.serverDate &&
+        options.releaseAt
+          ? normalized.serverDate.valueOf() - options.releaseAt.valueOf()
+          : null;
+      const providerClockDetail =
+        providerDateOffset === null
+          ? ""
+          : `; provider Date-header second T${providerDateOffset >= 0 ? "+" : ""}${providerDateOffset}ms`;
       if (
         !(normalized instanceof DooremiError) ||
         normalized.code !== "rejected" ||
         attempt >= options.retryDelaysMilliseconds.length
       ) {
         options.onTiming?.(
-          `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ended in ${elapsed}ms with ${normalized instanceof DooremiError ? normalized.code : "unexpected_error"}: ${safeErrorMessage(normalized)}`,
+          `booking attempt ${attempt + 1} for ${target.eventDay} ${target.eventTime} ended in ${elapsed}ms with ${normalized instanceof DooremiError ? normalized.code : "unexpected_error"}${providerClockDetail}: ${safeErrorMessage(normalized)}`,
         );
         throw normalized;
       }
@@ -545,7 +697,7 @@ async function createSingleBookingWithSafeRetry(
         options.retryDelaysMilliseconds[attempt] +
         targetIndex * options.retryStaggerMilliseconds;
       options.onTiming?.(
-        `explicit rejection for ${target.eventDay} ${target.eventTime} returned in ${elapsed}ms; safe retry ${attempt + 1}/${options.retryDelaysMilliseconds.length} in ${delay}ms`,
+        `explicit rejection for ${target.eventDay} ${target.eventTime} returned in ${elapsed}ms${providerClockDetail}; safe retry ${attempt + 1}/${options.retryDelaysMilliseconds.length} in ${delay}ms`,
       );
       if (delay > 0) await options.sleep(delay);
     }
@@ -592,9 +744,15 @@ async function reconcileAmbiguousFailures(
     return { confirmed, unresolved: [...failures] };
   }
 
+  let previousOffsetMilliseconds = 0;
   for (let index = 0; index < options.delaysMilliseconds.length; index += 1) {
-    const delay = options.delaysMilliseconds[index];
+    const offsetMilliseconds = options.delaysMilliseconds[index];
+    const delay = Math.max(
+      0,
+      offsetMilliseconds - previousOffsetMilliseconds,
+    );
     if (delay > 0) await options.sleep(delay);
+    previousOffsetMilliseconds = offsetMilliseconds;
     let history: BookingRecord[];
     try {
       history = activeTennisBookings(
@@ -637,6 +795,106 @@ async function reconcileAmbiguousFailures(
         unresolvedAmbiguous.has(failure),
     ),
   };
+}
+
+async function reconcileFinalFailuresFromHistory(
+  client: BookingTransactionClient,
+  failures: readonly FailedSubmission[],
+  onTiming?: (message: string) => void,
+): Promise<{
+  confirmed: ConfirmedSubmission[];
+  unresolved: FailedSubmission[];
+}> {
+  if (failures.length === 0) return { confirmed: [], unresolved: [] };
+  let history: BookingRecord[];
+  try {
+    history = activeTennisBookings(
+      await client.bookingHistory({ pageSize: 50 }),
+    );
+  } catch (error) {
+    onTiming?.(
+      `final booking-history reconciliation warning: ${safeErrorMessage(error)}`,
+    );
+    return { confirmed: [], unresolved: [...failures] };
+  }
+  const confirmed: ConfirmedSubmission[] = [];
+  const unresolved: FailedSubmission[] = [];
+  for (const failure of failures) {
+    const booking = history.find((item) =>
+      bookingMatchesTarget(item, failure.target),
+    );
+    if (!booking) {
+      unresolved.push(failure);
+      continue;
+    }
+    confirmed.push({
+      target: failure.target,
+      result: {
+        message: "Confirmed from booking history after the provider response",
+        bookingOrderId: booking.id,
+      },
+      startedMs: failure.startedMs,
+    });
+    onTiming?.(
+      `final history reconciliation confirmed ${failure.target.eventDay} ${failure.target.eventTime} as booking ${booking.id}`,
+    );
+  }
+  return { confirmed, unresolved };
+}
+
+async function inspectFailureAvailability(
+  client: BookingTransactionClient,
+  schedule: Schedule,
+  failures: readonly FailedSubmission[],
+  onTiming?: (message: string) => void,
+): Promise<FailureAvailabilityObservation[]> {
+  if (!client.availability || !schedule.facilityCategoryId) return [];
+  const rejected = failures.filter(
+    (failure) =>
+      failure.error instanceof DooremiError &&
+      failure.error.code === "rejected",
+  );
+  const groups = new Map<string, FailedSubmission[]>();
+  for (const failure of rejected) {
+    const key = `${failure.target.eventDay}\u0000${failure.target.facilityId}`;
+    const group = groups.get(key) ?? [];
+    group.push(failure);
+    groups.set(key, group);
+  }
+  const observations: FailureAvailabilityObservation[] = [];
+  for (const group of groups.values()) {
+    const first = group[0].target;
+    let availability: Availability;
+    try {
+      availability = await client.availability(
+        first.eventDay,
+        first.facilityId,
+        schedule.facilityCategoryId,
+      );
+    } catch (error) {
+      onTiming?.(
+        `post-failure availability warning for ${first.eventDay}: ${safeErrorMessage(error)}`,
+      );
+      continue;
+    }
+    for (const failure of group) {
+      const slot = availability.slots.find(
+        (item) =>
+          item.facilityId === failure.target.facilityId &&
+          item.eventTime === failure.target.eventTime,
+      );
+      const state: FailureAvailabilityState = slot
+        ? slot.available
+          ? "available"
+          : "booked"
+        : "missing";
+      observations.push({ target: failure.target, state });
+      onTiming?.(
+        `post-failure availability for ${failure.target.eventDay} ${failure.target.eventTime}: ${state}`,
+      );
+    }
+  }
+  return observations;
 }
 
 export async function executeBookingTransaction(
@@ -705,6 +963,11 @@ export async function executeBookingTransaction(
     ambiguousReconciliationDelaysMilliseconds.length > 6 ||
     ambiguousReconciliationDelaysMilliseconds.some(
       (delay) => !Number.isFinite(delay) || delay < 0 || delay > 5_000,
+    ) ||
+    ambiguousReconciliationDelaysMilliseconds.some(
+      (delay, index) =>
+        index > 0 &&
+        delay < ambiguousReconciliationDelaysMilliseconds[index - 1],
     )
   ) {
     throw new DomainError("The booking timing or retry configuration is invalid.");
@@ -727,6 +990,8 @@ export async function executeBookingTransaction(
       {
         maximumTransmissionLeadMilliseconds:
           options.maximumTransmissionLeadMilliseconds,
+        maximumEarlySubmissionMilliseconds:
+          options.maximumEarlySubmissionMilliseconds,
         latencyPercentile: options.latencyPercentile,
         minimumSampleCount: minimumLatencySamples,
         fallbackRoundTripMilliseconds:
@@ -756,7 +1021,7 @@ export async function executeBookingTransaction(
     await sleepUntil(options.cancelAt, now, sleep);
     options.onTiming?.("configured cancellation window opened");
     if (preCancellationProbeCount > 0) {
-      preCancellationProbeElapsedMs = await collectLatencyProbes(clients[0], {
+      const preCancellationProbes = await collectLatencyProbes(clients[0], {
         count: preCancellationProbeCount,
         intervalMilliseconds: latencyProbeIntervalMilliseconds,
         timeoutMilliseconds: latencyProbeTimeoutMilliseconds,
@@ -765,6 +1030,7 @@ export async function executeBookingTransaction(
         label: "pre-cancellation latency gate",
         onTiming: options.onTiming,
       });
+      preCancellationProbeElapsedMs = preCancellationProbes.elapsedMs;
       warmupElapsedMs.push(...preCancellationProbeElapsedMs);
       if (
         preCancellationProbeElapsedMs.length <
@@ -802,16 +1068,18 @@ export async function executeBookingTransaction(
               latencyCalibrationCutoffMilliseconds,
           )
         : undefined;
-      calibrationElapsedMs = await collectLatencyProbes(clients[0], {
+      const calibrationProbes = await collectLatencyProbes(clients[0], {
         count: latencyProbeCount,
         intervalMilliseconds: latencyProbeIntervalMilliseconds,
         timeoutMilliseconds: latencyProbeTimeoutMilliseconds,
         sleep,
         now,
         deadline,
+        releaseAt: options.releaseAt,
         label: "release latency calibration",
         onTiming: options.onTiming,
       });
+      calibrationElapsedMs = calibrationProbes.elapsedMs;
       warmupElapsedMs.push(...calibrationElapsedMs);
     }
     const remainingBeforeRelease = options.releaseAt
@@ -857,6 +1125,8 @@ export async function executeBookingTransaction(
       {
         maximumTransmissionLeadMilliseconds:
           options.maximumTransmissionLeadMilliseconds,
+        maximumEarlySubmissionMilliseconds:
+          options.maximumEarlySubmissionMilliseconds,
         latencyPercentile: options.latencyPercentile,
         minimumSampleCount: minimumLatencySamples,
         fallbackRoundTripMilliseconds:
@@ -866,7 +1136,7 @@ export async function executeBookingTransaction(
     fireAt = compensated.fireAt;
     const offset = fireAt.valueOf() - options.releaseAt.valueOf();
     options.onTiming?.(
-      `submission transmit scheduled at T${offset >= 0 ? "+" : ""}${offset}ms from ${compensated.sampleCount} samples: p${Math.round(compensated.latencyPercentile * 100)} RTT ${Math.round(compensated.calibratedRoundTripMilliseconds)}ms, median ${compensated.medianRoundTripMilliseconds === null ? "n/a" : `${Math.round(compensated.medianRoundTripMilliseconds)}ms`}, lead ${compensated.transmissionLeadMilliseconds}ms${compensated.usedFallback ? " (fallback floor applied)" : ""}`,
+      `submission transmit scheduled at T${offset >= 0 ? "+" : ""}${offset}ms from ${compensated.sampleCount} samples: p${Math.round(compensated.latencyPercentile * 100)} RTT ${Math.round(compensated.calibratedRoundTripMilliseconds)}ms, median ${compensated.medianRoundTripMilliseconds === null ? "n/a" : `${Math.round(compensated.medianRoundTripMilliseconds)}ms`}, applied lead ${compensated.transmissionLeadMilliseconds}ms${compensated.earlyTransmissionCapped ? ` (uncapped estimate ${compensated.uncappedTransmissionLeadMilliseconds}ms; early-send guard applied)` : ""}${compensated.usedFallback ? " (fallback floor applied)" : ""}`,
     );
   }
   if (fireAt) {
@@ -935,6 +1205,24 @@ export async function executeBookingTransaction(
     failures.length = 0;
     failures.push(...reconciled.unresolved);
   }
+  const finalReconciliationCandidates = failures.filter(
+    (failure) =>
+      failure.error instanceof DooremiError &&
+      failure.error.code === "rejected",
+  );
+  if (finalReconciliationCandidates.length > 0) {
+    const untouchedFailures = failures.filter(
+      (failure) => !finalReconciliationCandidates.includes(failure),
+    );
+    const reconciled = await reconcileFinalFailuresFromHistory(
+      client,
+      finalReconciliationCandidates,
+      options.onTiming,
+    );
+    results.push(...reconciled.confirmed);
+    failures.length = 0;
+    failures.push(...untouchedFailures, ...reconciled.unresolved);
+  }
   const starts = outcomes.map((outcome) => outcome.startedMs);
   const submitSkewMs =
     starts.length > 1
@@ -942,12 +1230,19 @@ export async function executeBookingTransaction(
       : 0;
 
   if (failures.length > 0) {
+    const availabilityEvidence = await inspectFailureAvailability(
+      client,
+      prepared.schedule,
+      failures,
+      options.onTiming,
+    );
     if (results.length > 0) {
       throw new PartialBookingError(
         results,
         failures,
         submitSkewMs,
         cancelledBookingIds,
+        availabilityEvidence,
       );
     }
     if (cancelledBookingIds.length > 0) {
@@ -955,14 +1250,23 @@ export async function executeBookingTransaction(
         cancelledBookingIds,
         failures,
         submitSkewMs,
+        availabilityEvidence,
       );
     }
-    throw failures[0].error;
+    throw new BookingSubmissionError(
+      failures,
+      submitSkewMs,
+      availabilityEvidence,
+    );
   }
 
-  const bookingOrderIds = results
-    .map((item) => item.result.bookingOrderId)
-    .filter((id): id is number => id !== null);
+  const bookingOrderIds = [
+    ...new Set(
+      results
+        .map((item) => item.result.bookingOrderId)
+        .filter((id): id is number => id !== null),
+    ),
+  ];
   return {
     message: `${results.length} of ${prepared.bookingTargets.length} sessions confirmed`,
     bookingOrderId: bookingOrderIds[0] ?? null,

@@ -144,7 +144,10 @@ test("a nonzero JSON status is an explicit rejection that can be retried safely"
       facilityId: 9001,
     }),
     (error: unknown) =>
-      error instanceof DooremiError && error.code === "rejected",
+      error instanceof DooremiError &&
+      error.code === "rejected" &&
+      error.serverDate?.toISOString() === "2026-07-03T04:00:00.000Z" &&
+      error.elapsedMs !== null,
   );
 });
 

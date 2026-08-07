@@ -8,6 +8,7 @@ import {
   HOSTED_FALLBACK_ROUND_TRIP_MILLISECONDS,
   HOSTED_LATENCY_PERCENTILE,
   HOSTED_LATENCY_PROBE_COUNT,
+  HOSTED_MAXIMUM_EARLY_SUBMISSION_MILLISECONDS,
   HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
   HOSTED_MINIMUM_LATENCY_SAMPLES,
   HOSTED_PRE_CANCELLATION_MINIMUM_SUCCESSES,
@@ -52,6 +53,8 @@ export async function GET() {
         fireDelayMilliseconds: settings.fireDelayMilliseconds,
         maximumTransmissionLeadMilliseconds:
           HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+        maximumEarlySubmissionMilliseconds:
+          HOSTED_MAXIMUM_EARLY_SUBMISSION_MILLISECONDS,
         preCancellationProbeCount:
           HOSTED_PRE_CANCELLATION_PROBE_COUNT,
         preCancellationMinimumSuccesses:

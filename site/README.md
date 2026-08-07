@@ -44,13 +44,19 @@ Hosted execution claims and warms each transaction at least 60 seconds before
 release, but does not expose existing bookings for that full preparation
 window. At the configured T-15-second boundary it runs three authenticated,
 read-only latency probes and requires at least two successes before cancelling
-anything. After cancellation and history verification, it takes five more
+anything. After cancellation and history verification, it takes ten more
 bounded samples near release and derives the transmit lead from the current p75
-RTT, with a 120ms fallback floor and a 250ms maximum. Explicit JSON rejections
-follow a bounded 40/90/200/450ms retry ladder. Ambiguous submissions are never
-blindly resent; the runner polls booking history at 0/250/750/1500ms to
-reconcile a confirmation safely. Due plans execute in parallel so one user's
-release wait cannot delay another user's plan.
+RTT, with a 120ms fallback floor and a 250ms maximum. Because RTT/2 can
+overstate outbound transit, an early-send guard keeps the first request no
+earlier than T-5ms. The ten-sample release probe train also records provider
+Date-header lag and regressions. Explicit JSON rejections follow a bounded
+0/0/25/100/400/1000ms delay ladder, closing the old post-rejection gap while
+covering lagging provider instances. Ambiguous submissions are never blindly
+resent; the runner polls booking history at absolute offsets
+0/250/750/1500ms. Before declaring any final rejection, it reconciles booking
+history and records whether each target is still available or has become
+booked. Due plans execute in parallel so one user's release wait cannot delay
+another user's plan.
 
 The Worker exports a scheduled handler and the application exposes
 `POST /api/automation/run-due`, authenticated with `AUTOMATION_SECRET`. The

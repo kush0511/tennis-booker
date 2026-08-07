@@ -2,6 +2,7 @@ import { appendScheduleEvent, finishSchedule, type StoredSchedule } from "@/db/r
 import { releaseAt, type Config, type Schedule } from "@/lib/domain";
 import { dooremiClient, HttpError } from "./api";
 import {
+  BookingSubmissionError,
   CancellationError,
   PartialBookingError,
   RebookingSubmissionError,
@@ -19,6 +20,7 @@ import {
   HOSTED_LATENCY_PROBE_COUNT,
   HOSTED_LATENCY_PROBE_INTERVAL_MILLISECONDS,
   HOSTED_LATENCY_PROBE_TIMEOUT_MILLISECONDS,
+  HOSTED_MAXIMUM_EARLY_SUBMISSION_MILLISECONDS,
   HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
   HOSTED_MINIMUM_LATENCY_SAMPLES,
   HOSTED_PRE_CANCELLATION_MINIMUM_SUCCESSES,
@@ -164,6 +166,8 @@ export async function executeStoredSchedule(
       fireDelayMilliseconds: config.fireDelayMilliseconds,
       maximumTransmissionLeadMilliseconds:
         HOSTED_MAX_TRANSMISSION_LEAD_MILLISECONDS,
+      maximumEarlySubmissionMilliseconds:
+        HOSTED_MAXIMUM_EARLY_SUBMISSION_MILLISECONDS,
       rejectedSubmissionRetryDelaysMilliseconds:
         HOSTED_REJECTED_SUBMISSION_RETRY_DELAYS_MILLISECONDS,
       rejectedSubmissionRetryStaggerMilliseconds:
@@ -214,9 +218,15 @@ export async function executeStoredSchedule(
         ? error.cancelledBookingIds
         : [];
     const failedTargets =
-      error instanceof RebookingSubmissionError ? error.bookingTargets : [];
+      error instanceof RebookingSubmissionError ||
+      error instanceof BookingSubmissionError
+        ? error.bookingTargets
+        : [];
     const submitSkewMs =
-      error instanceof RebookingSubmissionError ? error.submitSkewMs : null;
+      error instanceof RebookingSubmissionError ||
+      error instanceof BookingSubmissionError
+        ? error.submitSkewMs
+        : null;
     await finishSchedule(stored.id, {
       status: "failed",
       resultMessage: message,

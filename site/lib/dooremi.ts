@@ -35,16 +35,22 @@ export type DooremiErrorCode =
 export class DooremiError extends Error {
   readonly code: DooremiErrorCode;
   readonly httpStatus: number | null;
+  readonly serverDate: Date | null;
+  readonly elapsedMs: number | null;
 
   constructor(
     message: string,
     code: DooremiErrorCode = "api",
     httpStatus: number | null = null,
+    serverDate: Date | null = null,
+    elapsedMs: number | null = null,
   ) {
     super(message);
     this.name = "DooremiError";
     this.code = code;
     this.httpStatus = httpStatus;
+    this.serverDate = serverDate;
+    this.elapsedMs = elapsedMs;
   }
 }
 
@@ -441,6 +447,12 @@ export class DooremiClient {
       }
 
       const elapsedMs = Math.round(this.#monotonicNow() - started);
+      const dateHeader = response.headers.get("date");
+      const parsedServerDate = dateHeader ? new Date(dateHeader) : null;
+      const serverDate =
+        parsedServerDate && !Number.isNaN(parsedServerDate.valueOf())
+          ? parsedServerDate
+          : null;
       if (response.status === 401 || response.status === 403) {
         throw new AuthenticationError();
       }
@@ -484,6 +496,9 @@ export class DooremiClient {
         throw new DooremiError(
           `Dooremi rejected the request (${String(root.status)}): ${message}`,
           "rejected",
+          response.status,
+          serverDate,
+          elapsedMs,
         );
       }
       return { payload: root, headers: response.headers, elapsedMs };
