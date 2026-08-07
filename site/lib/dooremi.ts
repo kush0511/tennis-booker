@@ -418,7 +418,6 @@ export async function loginDooremi(
           headers: {
             "Content-Type": "application/json",
             Accept: "application/json",
-            "Accept-Language": "en-SG,en-GB;q=0.9,en;q=0.8",
             "User-Agent": options.userAgent ?? DOOREMI_CURRENT_USER_AGENT,
           },
           body: JSON.stringify({
@@ -829,7 +828,6 @@ export class DooremiClient {
           Authorization: `Bearer ${this.#token}`,
           "Content-Type": "application/json",
           Accept: "application/json",
-          "Accept-Language": "en-SG,en-GB;q=0.9,en;q=0.8",
           "User-Agent": this.#userAgent,
         };
         if (cookieHeader) headers.Cookie = cookieHeader;

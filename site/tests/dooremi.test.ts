@@ -73,6 +73,7 @@ test("background sign-in uses the current app contract without authorization hea
   });
   const headers = new Headers(requests[0].init?.headers);
   assert.equal(headers.get("authorization"), null);
+  assert.equal(headers.get("accept-language"), null);
   assert.equal(headers.get("user-agent"), DOOREMI_IOS_USER_AGENT);
 });
 
@@ -117,6 +118,7 @@ test("the server client sends the captured request shape without exposing its to
   assert.equal(requests[0].init?.body, "{}");
   const headers = new Headers(requests[0].init?.headers);
   assert.equal(headers.get("authorization"), "Bearer hosted-secret-value");
+  assert.equal(headers.get("accept-language"), null);
   assert.equal(headers.get("user-agent"), DOOREMI_IOS_USER_AGENT);
   assert.equal(headers.get("connection"), null);
   assert.equal(Object.keys(client).some((key) => /token/i.test(key)), false);
