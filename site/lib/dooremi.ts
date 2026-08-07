@@ -185,7 +185,9 @@ export interface BookingPreparationResult {
   facilityName: string | null;
   eventDay: string;
   eventTime: string;
+  bookingFeeAmount: number | string | null;
   bookingFeeRequired: boolean;
+  hasPayNow: boolean | null;
   managementPaymentSelected: boolean;
   elapsedMs: number;
   serverDate: Date | null;
@@ -273,6 +275,18 @@ function numericId(value: unknown): number | null {
 
 function text(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function safeAmount(value: unknown): number | string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (
+    typeof value === "string" &&
+    value.length <= 32 &&
+    /^\d+(?:\.\d+)?$/.test(value)
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function isAuthenticationMessage(message: string): boolean {
@@ -625,7 +639,10 @@ export class DooremiClient {
           facility.eventTime,
           normalizeBookingTargets(single)[0].eventTime,
         ),
+        bookingFeeAmount: safeAmount(content.bookingFeeAmount),
         bookingFeeRequired,
+        hasPayNow:
+          typeof content.hasPayNow === "boolean" ? content.hasPayNow : null,
         managementPaymentSelected: bookingFeeRequired,
         elapsedMs: result.elapsedMs,
         serverDate: this.#serverDate(result.headers),
