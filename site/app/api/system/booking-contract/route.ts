@@ -35,9 +35,22 @@ export async function GET(request: Request) {
       freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
       requireManagedRefresh: true,
     });
+    const availability = await client.availability(
+      eventDay,
+      facilityId,
+      facilityCategoryId,
+    );
+    const slot = availability.slots.find(
+      (candidate) => candidate.eventTime === eventTime,
+    );
     const preview = await client.prepareSingleBooking(schedule);
     return data({
       checkedAt: new Date().toISOString(),
+      configuredFacilityId: facilityId,
+      availabilityFacilityId: availability.facilityId,
+      slotFacilityId: slot?.facilityId ?? null,
+      slotId: slot?.id ?? null,
+      slotAvailable: slot?.available ?? null,
       eventDay: preview.eventDay,
       eventTime: preview.eventTime,
       facilityName: preview.facilityName,
