@@ -50,19 +50,27 @@ export default async function Home() {
     { getRuntimeEnv },
     { getSettings, listSchedules },
     { externalWakeCoversRelease },
+    { DooremiClient },
   ] = await Promise.all([
     import("@/db"),
     import("@/db/repository"),
     import("@/lib/automation"),
+    import("@/lib/dooremi"),
   ]);
   const [settings, schedules] = await Promise.all([
     getSettings(user.email),
     listSchedules(user.email),
   ]);
   const { currentSuggestedSessionDay } = await import("@/lib/domain");
-  const tokenConfigured = Boolean(
-    getRuntimeEnv().DOOREMI_BEARER_TOKEN,
-  );
+  const token = getRuntimeEnv().DOOREMI_BEARER_TOKEN;
+  const tokenConfigured = Boolean(token);
+  const initialBookingCredential = token
+    ? new DooremiClient({ token }).bookingCredential()
+    : {
+        status: "missing" as const,
+        issuedAt: null,
+        minimumIssuedAt: null,
+      };
   const automationReady = Boolean(
     getRuntimeEnv().AUTOMATION_SECRET &&
       getRuntimeEnv().AUTOMATION_TRIGGER_ENABLED === "true" &&
@@ -76,6 +84,7 @@ export default async function Home() {
       initialSchedules={schedules}
       initialDay={currentSuggestedSessionDay(settings.bookingLeadDays)}
       tokenConfigured={tokenConfigured}
+      initialBookingCredential={initialBookingCredential}
       automationReady={automationReady}
     />
   );

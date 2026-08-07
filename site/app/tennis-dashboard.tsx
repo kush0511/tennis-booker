@@ -37,12 +37,19 @@ type ApiResponse<T> = {
   error?: string;
 };
 
+type BookingCredential = {
+  status: "current" | "upgrade_required" | "unknown" | "missing";
+  issuedAt: string | null;
+  minimumIssuedAt: string | null;
+};
+
 type DashboardProps = {
   user: { email: string; displayName: string };
   initialSettings: UserSettings;
   initialSchedules: StoredSchedule[];
   initialDay: string;
   tokenConfigured: boolean;
+  initialBookingCredential: BookingCredential;
   automationReady: boolean;
 };
 
@@ -51,11 +58,7 @@ type Tab = "book" | "plans" | "history" | "system";
 type SystemHealth = {
   checkedAt: string;
   dooremiConfigured: boolean;
-  bookingCredential: {
-    status: "current" | "upgrade_required" | "unknown" | "missing";
-    issuedAt: string | null;
-    minimumIssuedAt: string | null;
-  };
+  bookingCredential: BookingCredential;
   automationEnabled: boolean;
   wakeWindow: string;
   lastSeenAt: string | null;
@@ -92,6 +95,7 @@ export function TennisDashboard({
   initialSchedules,
   initialDay,
   tokenConfigured,
+  initialBookingCredential,
   automationReady,
 }: DashboardProps) {
   const [tab, setTab] = useState<Tab>("book");
@@ -115,6 +119,11 @@ export function TennisDashboard({
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [loadingSystem, setLoadingSystem] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
+  const bookingCredential =
+    systemHealth?.bookingCredential ?? initialBookingCredential;
+  const bookingReady = bookingCredential.status === "current";
+  const bookingBlocked = bookingCredential.status === "upgrade_required";
+  const bookingAutomationReady = automationReady && bookingReady;
   const availabilityCache = useRef(
     new Map<string, { data: Availability; fetchedAt: number }>(),
   );
@@ -265,10 +274,9 @@ export function TennisDashboard({
   }, [loadSchedules, tab]);
 
   useEffect(() => {
-    if (tab !== "system") return;
     const timer = window.setTimeout(() => void loadSystemHealth(), 0);
     return () => window.clearTimeout(timer);
-  }, [loadSystemHealth, tab]);
+  }, [loadSystemHealth]);
 
   function changeDay(day: string) {
     setSelectedDay(day);
@@ -530,8 +538,8 @@ export function TennisDashboard({
               System
             </button>
           </nav>
-          <span className={`connection-pill ${tokenConfigured ? "is-live" : ""}`}>
-            <span /> {tokenConfigured ? "Dooremi live" : "Setup needed"}
+          <span className={`connection-pill ${bookingReady ? "is-live" : ""}`}>
+            <span /> {bookingReadinessLabel(bookingCredential)}
           </span>
           <button
             className="avatar-button"
@@ -552,14 +560,18 @@ export function TennisDashboard({
           <div className="release-hero">
             <div className="hero-copy">
               <p className="eyebrow">
-                {release === null
+                {bookingBlocked
+                  ? "Credential update required"
+                  : release === null
                   ? "Court clock"
                   : releaseOpen
                     ? "Booking window open"
                     : "Next release"}
               </p>
               <h1 id="booking-heading">
-                {release === null || now === null
+                {bookingBlocked
+                  ? "BOOKING BLOCKED"
+                  : release === null || now === null
                   ? "Syncing release…"
                   : releaseOpen
                     ? "COURTS OPEN"
@@ -572,11 +584,23 @@ export function TennisDashboard({
               </p>
             </div>
             <div className="readiness-strip" aria-label="System readiness">
-              <span className={tokenConfigured ? "is-ready" : ""}>
-                <i /> DOOREMI {tokenConfigured ? "LIVE" : "OFF"}
+              <span className={bookingReady ? "is-ready" : ""}>
+                <i /> DOOREMI{" "}
+                {bookingReady
+                  ? "READY"
+                  : bookingBlocked
+                    ? "UPDATE"
+                    : tokenConfigured
+                      ? "CHECK"
+                      : "OFF"}
               </span>
-              <span className={automationReady ? "is-ready" : ""}>
-                <i /> AUTO {automationReady ? "ARMED" : "MANUAL"}
+              <span className={bookingAutomationReady ? "is-ready" : ""}>
+                <i /> AUTO{" "}
+                {bookingAutomationReady
+                  ? "ARMED"
+                  : bookingBlocked
+                    ? "BLOCKED"
+                    : "MANUAL"}
               </span>
               <button type="button" onClick={() => setTab("system")}>
                 SYSTEM ↗
@@ -585,27 +609,44 @@ export function TennisDashboard({
             <div
               className="release-state"
               aria-label={
-                release === null
+                bookingBlocked
+                  ? "Booking blocked by legacy credential"
+                  : release === null
                   ? "Syncing court clock"
                   : releaseOpen
                   ? "Booking is open"
-                  : automationReady
+                  : bookingAutomationReady
                     ? "Booking is armed"
                     : "Manual release mode"
               }
             >
               <span className="pulse-ring" />
-              {release === null
+              {bookingBlocked
+                ? "BLOCKED"
+                : release === null
                 ? "SYNC"
                 : releaseOpen
                   ? "OPEN"
-                  : automationReady
+                  : bookingAutomationReady
                     ? "TRACKING"
                     : "MANUAL"}
             </div>
           </div>
 
-          {!tokenConfigured ? (
+          {bookingBlocked ? (
+            <div className="setup-banner" role="alert">
+              <div>
+                <strong>Update the Dooremi token before the next release</strong>
+                <p>
+                  This legacy credential can read availability but Dooremi rejects
+                  booking writes. Court Signal will stop before cancellation.
+                </p>
+              </div>
+              <button type="button" onClick={() => setTab("system")}>
+                View system
+              </button>
+            </div>
+          ) : !tokenConfigured ? (
             <div className="setup-banner" role="status">
               <div>
                 <strong>Add your hosted secret</strong>
@@ -760,7 +801,7 @@ export function TennisDashboard({
               className="primary-button"
               type="button"
               onClick={submitSelection}
-              disabled={!selectedTimes.length || submitting || !tokenConfigured}
+              disabled={!selectedTimes.length || submitting || !bookingReady}
             >
               {submitting
                 ? "Working…"
@@ -983,12 +1024,8 @@ export function TennisDashboard({
           <div className="health-stack">
             <SystemCheckCard
               label="Booking credential"
-              value={
-                systemHealth
-                  ? systemHealth.bookingCredential.status === "current"
-                  : tokenConfigured
-              }
-              detail={bookingCredentialDetail(systemHealth, tokenConfigured)}
+              value={bookingReady}
+              detail={bookingCredentialDetail(bookingCredential)}
             />
             <SystemCheckCard
               label="External wake-up"
@@ -1211,15 +1248,8 @@ function SystemCheckCard({
 }
 
 function bookingCredentialDetail(
-  health: SystemHealth | null,
-  tokenConfigured: boolean,
+  credential: BookingCredential,
 ): string {
-  if (!health) {
-    return tokenConfigured
-      ? "Stored only in this Site’s hosted secret vault."
-      : "No hosted Dooremi token is configured.";
-  }
-  const credential = health.bookingCredential;
   if (credential.status === "current" && credential.issuedAt) {
     return `Current-app token issued ${formatDateTime(credential.issuedAt)} SGT.`;
   }
@@ -1230,6 +1260,13 @@ function bookingCredentialDetail(
     return "Stored securely, but its issue date cannot be verified. The connection check validates reads only.";
   }
   return "No hosted Dooremi token is configured.";
+}
+
+function bookingReadinessLabel(credential: BookingCredential): string {
+  if (credential.status === "current") return "Booking ready";
+  if (credential.status === "upgrade_required") return "Token update needed";
+  if (credential.status === "unknown") return "Credential unverified";
+  return "Setup needed";
 }
 
 function SettingsSheet({

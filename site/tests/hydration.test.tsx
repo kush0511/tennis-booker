@@ -19,6 +19,11 @@ const props = {
   initialSchedules: [],
   initialDay: "2026-07-26",
   tokenConfigured: true,
+  initialBookingCredential: {
+    status: "current" as const,
+    issuedAt: "2026-08-07T04:00:00.000Z",
+    minimumIssuedAt: "2026-02-28T16:00:00.000Z",
+  },
   automationReady: false,
 };
 
@@ -36,4 +41,23 @@ test("initial dashboard markup is stable across a clock tick", () => {
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("a legacy credential is never presented as live or armed", () => {
+  const markup = renderToString(
+    <TennisDashboard
+      {...props}
+      automationReady
+      initialBookingCredential={{
+        status: "upgrade_required",
+        issuedAt: "2026-01-14T15:50:16.000Z",
+        minimumIssuedAt: "2026-02-28T16:00:00.000Z",
+      }}
+    />,
+  );
+  assert.match(markup, /BOOKING BLOCKED/);
+  assert.match(markup, /Token update needed/);
+  assert.match(markup, /AUTO.*BLOCKED/);
+  assert.match(markup, /Update the Dooremi token before the next release/);
+  assert.doesNotMatch(markup, /Dooremi live|AUTO.*ARMED/);
 });
