@@ -109,6 +109,55 @@ type SessionManagerOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
+type ManagedSessionMaterial = {
+  token: string;
+  cookieHeader: string | null;
+  mobileInitializationAttempted: boolean;
+};
+
+function serializeManagedSession(material: ManagedSessionMaterial): string {
+  return JSON.stringify({
+    version: 1,
+    token: material.token,
+    cookieHeader: material.cookieHeader,
+    mobileInitializationAttempted: material.mobileInitializationAttempted,
+  });
+}
+
+function parseManagedSession(plaintext: string): ManagedSessionMaterial {
+  try {
+    const parsed = JSON.parse(plaintext) as Record<string, unknown>;
+    const cookieHeader =
+      parsed.cookieHeader === null || parsed.cookieHeader === undefined
+        ? null
+        : typeof parsed.cookieHeader === "string" &&
+            parsed.cookieHeader.length <= 8_192 &&
+            !/[\u0000-\u001f\u007f]/.test(parsed.cookieHeader)
+          ? parsed.cookieHeader
+          : undefined;
+    if (
+      parsed.version === 1 &&
+      typeof parsed.token === "string" &&
+      parsed.token &&
+      cookieHeader !== undefined
+    ) {
+      return {
+        token: parsed.token,
+        cookieHeader,
+        mobileInitializationAttempted:
+          parsed.mobileInitializationAttempted === true,
+      };
+    }
+  } catch {
+    // Existing deployments encrypted the raw token directly.
+  }
+  return {
+    token: plaintext,
+    cookieHeader: null,
+    mobileInitializationAttempted: false,
+  };
+}
+
 export class ManagedCredentialUnavailableError extends DooremiError {
   constructor(message = "The app-managed Dooremi session is unavailable.") {
     super(message, "authentication");
@@ -143,8 +192,12 @@ export class DooremiSessionManager {
   }
 
   async client(request: DooremiClientRequest = {}): Promise<DooremiClient> {
-    const token = await this.#token(request);
-    return new DooremiClient({ token, fetch: this.#fetch });
+    const material = await this.#session(request);
+    return new DooremiClient({
+      token: material.token,
+      cookieHeader: material.cookieHeader,
+      fetch: this.#fetch,
+    });
   }
 
   async maintain(): Promise<DooremiSessionStatus> {
@@ -208,7 +261,7 @@ export class DooremiSessionManager {
       this.#config.encryptionKey
     ) {
       try {
-        const token = await decryptCredential(
+        const plaintext = await decryptCredential(
           {
             ciphertext: record.tokenCiphertext,
             iv: record.tokenIv,
@@ -216,7 +269,11 @@ export class DooremiSessionManager {
           },
           this.#config.encryptionKey,
         );
-        bookingCredential = new DooremiClient({ token }).bookingCredential();
+        const material = parseManagedSession(plaintext);
+        bookingCredential = new DooremiClient({
+          token: material.token,
+          cookieHeader: material.cookieHeader,
+        }).bookingCredential();
         source = "managed";
       } catch {
         source = "error";
@@ -249,16 +306,24 @@ export class DooremiSessionManager {
     };
   }
 
-  async #token(request: DooremiClientRequest): Promise<string> {
+  async #session(
+    request: DooremiClientRequest,
+  ): Promise<ManagedSessionMaterial> {
     const freshness =
       request.freshWithinMilliseconds ??
       DOOREMI_BACKGROUND_REFRESH_MILLISECONDS;
     const record = await this.#store.read(DOOREMI_SESSION_PROVIDER);
-    const managedToken = await this.#usableManagedToken(
+    const managedSession = await this.#usableManagedSession(
       record,
       request.forceRefresh ? -1 : freshness,
     );
-    if (managedToken) return managedToken;
+    if (
+      managedSession &&
+      (!request.requireManagedRefresh ||
+        managedSession.mobileInitializationAttempted)
+    ) {
+      return managedSession;
+    }
 
     if (this.autoRenewConfigured()) {
       if (
@@ -266,12 +331,18 @@ export class DooremiSessionManager {
         !request.requireManagedRefresh &&
         this.#refreshBackoffActive(record)
       ) {
-        const staleManagedToken = await this.#usableManagedToken(
+        const staleManagedSession = await this.#usableManagedSession(
           record,
           Number.POSITIVE_INFINITY,
         );
-        if (staleManagedToken) return staleManagedToken;
-        if (this.#config.bootstrapToken) return this.#config.bootstrapToken;
+        if (staleManagedSession) return staleManagedSession;
+        if (this.#config.bootstrapToken) {
+          return {
+            token: this.#config.bootstrapToken,
+            cookieHeader: null,
+            mobileInitializationAttempted: false,
+          };
+        }
         throw new ManagedCredentialUnavailableError(
           "Background Dooremi sign-in is waiting before its next retry.",
         );
@@ -280,12 +351,18 @@ export class DooremiSessionManager {
         return await this.#refresh(record);
       } catch (error) {
         if (request.requireManagedRefresh) throw error;
-        const staleManagedToken = await this.#usableManagedToken(
+        const staleManagedSession = await this.#usableManagedSession(
           record,
           Number.POSITIVE_INFINITY,
         );
-        if (staleManagedToken) return staleManagedToken;
-        if (this.#config.bootstrapToken) return this.#config.bootstrapToken;
+        if (staleManagedSession) return staleManagedSession;
+        if (this.#config.bootstrapToken) {
+          return {
+            token: this.#config.bootstrapToken,
+            cookieHeader: null,
+            mobileInitializationAttempted: false,
+          };
+        }
         throw error;
       }
     }
@@ -295,8 +372,14 @@ export class DooremiSessionManager {
         "Background Dooremi sign-in is not configured. No booking was changed.",
       );
     }
-    if (managedToken) return managedToken;
-    if (this.#config.bootstrapToken) return this.#config.bootstrapToken;
+    if (managedSession) return managedSession;
+    if (this.#config.bootstrapToken) {
+      return {
+        token: this.#config.bootstrapToken,
+        cookieHeader: null,
+        mobileInitializationAttempted: false,
+      };
+    }
     throw new ManagedCredentialUnavailableError();
   }
 
@@ -316,10 +399,10 @@ export class DooremiSessionManager {
     );
   }
 
-  async #usableManagedToken(
+  async #usableManagedSession(
     record: StoredProviderCredential | null,
     freshnessMilliseconds: number,
-  ): Promise<string | null> {
+  ): Promise<ManagedSessionMaterial | null> {
     if (
       !record?.tokenCiphertext ||
       !record.tokenIv ||
@@ -337,7 +420,7 @@ export class DooremiSessionManager {
       return null;
     }
     try {
-      return await decryptCredential(
+      const plaintext = await decryptCredential(
         {
           ciphertext: record.tokenCiphertext,
           iv: record.tokenIv,
@@ -345,6 +428,7 @@ export class DooremiSessionManager {
         },
         this.#config.encryptionKey,
       );
+      return parseManagedSession(plaintext);
     } catch (error) {
       if (error instanceof CredentialCryptoError) return null;
       throw error;
@@ -353,7 +437,7 @@ export class DooremiSessionManager {
 
   async #refresh(
     baseline: StoredProviderCredential | null,
-  ): Promise<string> {
+  ): Promise<ManagedSessionMaterial> {
     const now = this.#now();
     const leaseUntil = new Date(now.valueOf() + 20_000);
     let claimed = await this.#store.claimRefresh(
@@ -370,11 +454,11 @@ export class DooremiSessionManager {
           concurrent?.refreshedAt &&
           concurrent.refreshedAt !== baseline?.refreshedAt
         ) {
-          const token = await this.#usableManagedToken(
+          const material = await this.#usableManagedSession(
             concurrent,
             DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
           );
-          if (token) return token;
+          if (material?.mobileInitializationAttempted) return material;
         }
         if (!concurrent?.refreshLeaseUntil) break;
       }
@@ -393,12 +477,34 @@ export class DooremiSessionManager {
     }
 
     try {
-      const { token, userName } = await this.#login();
-      const client = new DooremiClient({ token, fetch: this.#fetch });
+      const { token, userName, sessionCookieHeader } = await this.#login();
+      let cookieHeader = sessionCookieHeader;
+      const client = new DooremiClient({
+        token,
+        cookieHeader,
+        fetch: this.#fetch,
+        onCookieHeaderChange: (value) => {
+          cookieHeader = value;
+        },
+      });
       client.assertBookingCredentialCurrent();
       await client.warmup();
-      const encrypted = await encryptCredential(
+      try {
+        await client.initializeMobileSession();
+      } catch (error) {
+        if (error instanceof DooremiError && error.code === "authentication") {
+          throw error;
+        }
+        // The current app treats SIP initialization as best-effort too. The
+        // important compatibility property is that the request was attempted.
+      }
+      const material: ManagedSessionMaterial = {
         token,
+        cookieHeader,
+        mobileInitializationAttempted: true,
+      };
+      const encrypted = await encryptCredential(
+        serializeManagedSession(material),
         this.#config.encryptionKey!,
       );
       const refreshedAt = this.#now().toISOString();
@@ -411,14 +517,18 @@ export class DooremiSessionManager {
         lastValidatedAt: refreshedAt,
         loginIdentifierKind: identifierKind(userName),
       });
-      return token;
+      return material;
     } catch (error) {
       await this.#recordFailure(error);
       throw error;
     }
   }
 
-  async #login(): Promise<{ token: string; userName: string }> {
+  async #login(): Promise<{
+    token: string;
+    userName: string;
+    sessionCookieHeader: string | null;
+  }> {
     const primary = this.#config.userName!.trim();
     try {
       const result = await loginDooremi({
@@ -426,7 +536,11 @@ export class DooremiSessionManager {
         password: this.#config.password!,
         fetch: this.#fetch,
       });
-      return { token: result.token, userName: primary };
+      return {
+        token: result.token,
+        userName: primary,
+        sessionCookieHeader: result.sessionCookieHeader,
+      };
     } catch (error) {
       const fallback = this.#config.fallbackUserName?.trim();
       if (!(error instanceof DooremiLoginRejectedError) || !fallback) {
@@ -437,7 +551,11 @@ export class DooremiSessionManager {
         password: this.#config.password!,
         fetch: this.#fetch,
       });
-      return { token: result.token, userName: fallback };
+      return {
+        token: result.token,
+        userName: fallback,
+        sessionCookieHeader: result.sessionCookieHeader,
+      };
     }
   }
 

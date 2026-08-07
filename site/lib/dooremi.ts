@@ -20,6 +20,7 @@ export const DOOREMI_CURRENT_APP_TOKEN_NOT_BEFORE =
 export const DOOREMI_ENDPOINTS = Object.freeze({
   login: "/user/login",
   checkLogin: "/user/checkLogin",
+  mobileSession: "/user/gvs/getSipInfoV2",
   availability: "/user/booking/facilitySlot",
   preview: "/user/booking/orderPreview",
   createBooking: "/user/booking/createOrderV2",
@@ -218,6 +219,9 @@ export interface DooremiClientOptions {
   timeoutMs?: number;
   userAgent?: string;
   monotonicNow?: () => number;
+  /** Mobile HTTP session cookies, encrypted alongside the token by the manager. */
+  cookieHeader?: string | null;
+  onCookieHeaderChange?: (cookieHeader: string | null) => void;
 }
 
 export interface DooremiLoginOptions {
@@ -232,6 +236,7 @@ export interface DooremiLoginOptions {
 export interface DooremiLoginResult {
   token: string;
   issuedAt: string | null;
+  sessionCookieHeader: string | null;
 }
 
 interface RequestOptions {
@@ -337,6 +342,55 @@ function validateRawToken(token: string): void {
   }
 }
 
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+function splitSetCookieHeaders(headers: Headers): string[] {
+  const extended = headers as Headers & { getSetCookie?: () => string[] };
+  const separate = extended.getSetCookie?.();
+  if (separate?.length) return separate;
+  const combined = headers.get("set-cookie");
+  return combined
+    ? combined.split(/,(?=\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+=)/g)
+    : [];
+}
+
+function parseCookieHeader(header: string | null | undefined): Map<string, string> {
+  const cookies = new Map<string, string>();
+  for (const part of header?.split(";") ?? []) {
+    const separator = part.indexOf("=");
+    if (separator <= 0) continue;
+    const name = part.slice(0, separator).trim();
+    const value = part.slice(separator + 1).trim();
+    if (COOKIE_NAME.test(name) && !/[;\u0000-\u001f\u007f]/.test(value)) {
+      cookies.set(name, value);
+    }
+  }
+  return cookies;
+}
+
+function absorbResponseCookies(cookies: Map<string, string>, headers: Headers): void {
+  for (const setCookie of splitSetCookieHeaders(headers)) {
+    const pair = setCookie.split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    const name = pair.slice(0, separator).trim();
+    const value = pair.slice(separator + 1).trim();
+    if (!COOKIE_NAME.test(name) || /[;\u0000-\u001f\u007f]/.test(value)) continue;
+    if (/;\s*max-age\s*=\s*0(?:\s*;|\s*$)/i.test(setCookie)) {
+      cookies.delete(name);
+    } else {
+      cookies.set(name, value);
+    }
+  }
+}
+
+function serializeCookies(cookies: Map<string, string>): string | null {
+  const value = [...cookies.entries()]
+    .map(([name, cookie]) => `${name}=${cookie}`)
+    .join("; ");
+  return value || null;
+}
+
 /**
  * Signs in using the current provider-app contract. The username and password
  * are used only for this request and are never included in results or errors.
@@ -414,7 +468,9 @@ export async function loginDooremi(
     const token = typeof content?.token === "string" ? content.token : "";
     validateRawToken(token);
     const issuedAt = jwtCreatedAt(token)?.toISOString() ?? null;
-    return { token, issuedAt };
+    const cookies = new Map<string, string>();
+    absorbResponseCookies(cookies, response.headers);
+    return { token, issuedAt, sessionCookieHeader: serializeCookies(cookies) };
   } finally {
     clearTimeout(timeout);
   }
@@ -434,6 +490,8 @@ export class DooremiClient {
   readonly #timeoutMs: number;
   readonly #userAgent: string;
   readonly #monotonicNow: () => number;
+  readonly #cookies: Map<string, string>;
+  readonly #onCookieHeaderChange?: (cookieHeader: string | null) => void;
   readonly #preparedBookings = new Map<string, Promise<PreparedBooking>>();
 
   constructor(options: DooremiClientOptions) {
@@ -452,6 +510,8 @@ export class DooremiClient {
     this.#userAgent = options.userAgent ?? DOOREMI_IOS_USER_AGENT;
     this.#monotonicNow =
       options.monotonicNow ?? (() => globalThis.performance.now());
+    this.#cookies = parseCookieHeader(options.cookieHeader);
+    this.#onCookieHeaderChange = options.onCookieHeaderChange;
   }
 
   /** Creates another stateless facade without exposing the credential. */
@@ -463,7 +523,13 @@ export class DooremiClient {
       timeoutMs: this.#timeoutMs,
       userAgent: this.#userAgent,
       monotonicNow: this.#monotonicNow,
+      cookieHeader: serializeCookies(this.#cookies),
+      onCookieHeaderChange: this.#onCookieHeaderChange,
     });
+  }
+
+  sessionCookieCount(): number {
+    return this.#cookies.size;
   }
 
   bookingCredential(): BookingCredentialInfo {
@@ -501,6 +567,15 @@ export class DooremiClient {
     return {
       elapsedMs: result.elapsedMs,
       serverDate: parsed && !Number.isNaN(parsed.valueOf()) ? parsed : null,
+    };
+  }
+
+  /** Mirrors the current app's safe post-login Home initialization request. */
+  async initializeMobileSession(): Promise<WarmupResult> {
+    const result = await this.#request(DOOREMI_ENDPOINTS.mobileSession);
+    return {
+      elapsedMs: result.elapsedMs,
+      serverDate: this.#serverDate(result.headers),
     };
   }
 
@@ -749,15 +824,18 @@ export class DooremiClient {
     try {
       let response: Response;
       try {
+        const cookieHeader = serializeCookies(this.#cookies);
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${this.#token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Accept-Language": "en-SG,en-GB;q=0.9,en;q=0.8",
+          "User-Agent": this.#userAgent,
+        };
+        if (cookieHeader) headers.Cookie = cookieHeader;
         response = await this.#fetch(url, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.#token}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-            "Accept-Language": "en-SG,en-GB;q=0.9,en;q=0.8",
-            "User-Agent": this.#userAgent,
-          },
+          headers,
           body: JSON.stringify(options.body ?? {}),
           cache: "no-store",
           redirect: "manual",
@@ -776,6 +854,10 @@ export class DooremiClient {
       }
 
       const elapsedMs = Math.round(this.#monotonicNow() - started);
+      const beforeCookies = serializeCookies(this.#cookies);
+      absorbResponseCookies(this.#cookies, response.headers);
+      const afterCookies = serializeCookies(this.#cookies);
+      if (afterCookies !== beforeCookies) this.#onCookieHeaderChange?.(afterCookies);
       const dateHeader = response.headers.get("date");
       const parsedServerDate = dateHeader ? new Date(dateHeader) : null;
       const serverDate =

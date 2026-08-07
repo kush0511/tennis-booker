@@ -10,6 +10,7 @@
     "endpoints": {
       "login": "/user/login",
       "checkLogin": "/user/checkLogin",
+      "mobileSession": "/user/gvs/getSipInfoV2",
       "availability": "/user/booking/facilitySlot",
       "preview": "/user/booking/orderPreview",
       "createBooking": "/user/booking/createOrderV2",

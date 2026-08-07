@@ -336,7 +336,11 @@ export function TennisDashboard({
         method: "POST",
         body: JSON.stringify({ eventDay, eventTimes }),
       });
-      setNotice(result.message);
+      setNotice(
+        result.bookingOrderIds.length
+          ? `${result.message} · order ${result.bookingOrderIds.join(", ")}`
+          : result.message,
+      );
       setSelectedTimes([]);
       await Promise.all([loadAvailability(), loadBookings(), loadSchedules()]);
     } catch (caught) {

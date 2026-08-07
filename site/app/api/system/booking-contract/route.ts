@@ -34,6 +34,7 @@ export async function GET(request: Request) {
     const client = await dooremiClient({
       freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
       requireManagedRefresh: true,
+      forceRefresh: true,
     });
     const availability = await client.availability(
       eventDay,
@@ -46,6 +47,8 @@ export async function GET(request: Request) {
     const preview = await client.prepareSingleBooking(schedule);
     return data({
       checkedAt: new Date().toISOString(),
+      sessionCookieCount: client.sessionCookieCount(),
+      mobileSessionInitialization: "attempted",
       configuredFacilityId: facilityId,
       availabilityFacilityId: availability.facilityId,
       slotFacilityId: slot?.facilityId ?? null,

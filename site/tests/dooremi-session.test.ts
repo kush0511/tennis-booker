@@ -22,10 +22,13 @@ function tokenWithCreatedAt(createdAtSeconds: number): string {
   return `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ ct: createdAtSeconds })}.signature`;
 }
 
-function providerResponse(payload: unknown): Response {
+function providerResponse(
+  payload: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -123,12 +126,24 @@ class MemoryCredentialStore implements ProviderCredentialStore {
 test("the manager signs in with phone first and persists only ciphertext", async () => {
   const store = new MemoryCredentialStore();
   const token = tokenWithCreatedAt(Date.parse("2026-08-08T04:00:00Z") / 1_000);
-  const paths: string[] = [];
-  const fetch: FetchLike = async (input) => {
+  const requests: Array<{ path: string; cookie: string | null }> = [];
+  const fetch: FetchLike = async (input, init) => {
     const path = new URL(String(input)).pathname;
-    paths.push(path);
-    return path === "/user/login"
-      ? providerResponse({ status: 0, content: { token } })
+    requests.push({
+      path,
+      cookie: new Headers(init?.headers).get("cookie"),
+    });
+    if (path === "/user/login") {
+      return providerResponse(
+        { status: 0, content: { token } },
+        { "set-cookie": "dooremi_session=login-cookie; Path=/; HttpOnly" },
+      );
+    }
+    return path === "/user/checkLogin"
+      ? providerResponse(
+          { status: 0, content: {} },
+          { "set-cookie": "dooremi_session=mobile-cookie; Path=/; HttpOnly" },
+        )
       : providerResponse({ status: 0, content: {} });
   };
   const manager = new DooremiSessionManager({
@@ -148,7 +163,14 @@ test("the manager signs in with phone first and persists only ciphertext", async
     requireManagedRefresh: true,
   });
   assert.equal(client.bookingCredential().status, "current");
-  assert.deepEqual(paths, ["/user/login", "/user/checkLogin"]);
+  assert.deepEqual(
+    requests.map((request) => request.path),
+    ["/user/login", "/user/checkLogin", "/user/gvs/getSipInfoV2"],
+  );
+  assert.equal(requests[0].cookie, null);
+  assert.equal(requests[1].cookie, "dooremi_session=login-cookie");
+  assert.equal(requests[2].cookie, "dooremi_session=mobile-cookie");
+  assert.equal(client.sessionCookieCount(), 1);
   assert.equal(store.record?.provider, DOOREMI_SESSION_PROVIDER);
   assert.equal(store.record?.loginIdentifierKind, "phone");
   assert.equal(store.record?.consecutiveFailures, 0);
