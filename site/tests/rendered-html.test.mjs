@@ -70,7 +70,9 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.match(dashboard, /Confirm action/);
   assert.match(dashboard, /System check/);
   assert.match(dashboard, /View run details/);
-  assert.match(api, /getRuntimeEnv\(\)\.DOOREMI_BEARER_TOKEN/);
+  assert.match(api, /DOOREMI_USERNAME/);
+  assert.match(api, /DooremiSessionManager/);
+  assert.doesNotMatch(api, /password:\s*["'`][^"'`]+/);
   assert.match(healthRoute, /getAutomationHeartbeat/);
   assert.doesNotMatch(healthRoute, /AUTOMATION_SECRET:\s*runtime/);
   assert.match(eventRoute, /requireApiUser/);

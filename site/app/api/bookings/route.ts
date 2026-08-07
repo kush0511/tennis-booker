@@ -3,7 +3,8 @@ import { data, dooremiClient, requireApiUser, routeError } from "@/app/_server/a
 export async function GET() {
   try {
     await requireApiUser();
-    const bookings = await dooremiClient().bookingHistory({ pageSize: 50 });
+    const client = await dooremiClient();
+    const bookings = await client.bookingHistory({ pageSize: 50 });
     return data(bookings, {
       headers: { "Cache-Control": "private, no-store" },
     });

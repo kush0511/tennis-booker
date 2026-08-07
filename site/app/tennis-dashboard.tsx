@@ -55,10 +55,24 @@ type DashboardProps = {
 
 type Tab = "book" | "plans" | "history" | "system";
 
+type ManagedSessionHealth = {
+  autoRenewConfigured: boolean;
+  source: "managed" | "bootstrap" | "missing" | "error";
+  refreshedAt: string | null;
+  lastValidatedAt: string | null;
+  lastRefreshAttemptAt: string | null;
+  consecutiveFailures: number;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  loginIdentifierKind: "phone" | "email" | "other" | null;
+  needsAttention: boolean;
+};
+
 type SystemHealth = {
   checkedAt: string;
   dooremiConfigured: boolean;
   bookingCredential: BookingCredential;
+  managedSession: ManagedSessionHealth;
   automationEnabled: boolean;
   wakeWindow: string;
   lastSeenAt: string | null;
@@ -561,7 +575,7 @@ export function TennisDashboard({
             <div className="hero-copy">
               <p className="eyebrow">
                 {bookingBlocked
-                  ? "Credential update required"
+                  ? "Background sign-in needs attention"
                   : release === null
                   ? "Court clock"
                   : releaseOpen
@@ -610,7 +624,7 @@ export function TennisDashboard({
               className="release-state"
               aria-label={
                 bookingBlocked
-                  ? "Booking blocked by legacy credential"
+                  ? "Booking blocked until background sign-in recovers"
                   : release === null
                   ? "Syncing court clock"
                   : releaseOpen
@@ -636,10 +650,11 @@ export function TennisDashboard({
           {bookingBlocked ? (
             <div className="setup-banner" role="alert">
               <div>
-                <strong>Update the Dooremi token before the next release</strong>
+                <strong>Automatic Dooremi sign-in needs attention</strong>
                 <p>
-                  This legacy credential can read availability but Dooremi rejects
-                  booking writes. Court Signal will stop before cancellation.
+                  Court Signal could not replace the legacy session. It will retry
+                  in the background and will stop before cancellation until a
+                  current session is verified.
                 </p>
               </div>
               <button type="button" onClick={() => setTab("system")}>
@@ -649,10 +664,10 @@ export function TennisDashboard({
           ) : !tokenConfigured ? (
             <div className="setup-banner" role="status">
               <div>
-                <strong>Add your hosted secret</strong>
+                <strong>Background sign-in is not configured</strong>
                 <p>
-                  Set <code>DOOREMI_BEARER_TOKEN</code> in this Site’s settings,
-                  then redeploy. It stays on the server.
+                  Add the provider login as hosted secrets. Court Signal will own
+                  renewal without exposing credentials to the browser.
                 </p>
               </div>
               <button type="button" onClick={() => setSettingsOpen(true)}>
@@ -1023,6 +1038,14 @@ export function TennisDashboard({
 
           <div className="health-stack">
             <SystemCheckCard
+              label="Automatic sign-in"
+              value={
+                Boolean(systemHealth?.managedSession.autoRenewConfigured) &&
+                !systemHealth?.managedSession.needsAttention
+              }
+              detail={managedSessionDetail(systemHealth?.managedSession)}
+            />
+            <SystemCheckCard
               label="Booking credential"
               value={bookingReady}
               detail={bookingCredentialDetail(bookingCredential)}
@@ -1251,22 +1274,42 @@ function bookingCredentialDetail(
   credential: BookingCredential,
 ): string {
   if (credential.status === "current" && credential.issuedAt) {
-    return `Current-app token issued ${formatDateTime(credential.issuedAt)} SGT.`;
+    return `Current app-managed session issued ${formatDateTime(credential.issuedAt)} SGT.`;
   }
   if (credential.status === "upgrade_required" && credential.issuedAt) {
-    return `Legacy token issued ${formatDateTime(credential.issuedAt)} SGT. Sign in to the current Dooremi app and replace it before the next release.`;
+    return `Legacy session issued ${formatDateTime(credential.issuedAt)} SGT. Court Signal will replace it through background sign-in before booking.`;
   }
   if (credential.status === "unknown") {
-    return "Stored securely, but its issue date cannot be verified. The connection check validates reads only.";
+    return "Stored securely, but its issue date cannot be verified. A fresh managed sign-in is required before booking.";
   }
-  return "No hosted Dooremi token is configured.";
+  return "No managed Dooremi session is available.";
 }
 
 function bookingReadinessLabel(credential: BookingCredential): string {
   if (credential.status === "current") return "Booking ready";
-  if (credential.status === "upgrade_required") return "Token update needed";
+  if (credential.status === "upgrade_required") return "Sign-in retry needed";
   if (credential.status === "unknown") return "Credential unverified";
   return "Setup needed";
+}
+
+function managedSessionDetail(session: ManagedSessionHealth | undefined): string {
+  if (!session) return "Checking the app-owned provider session…";
+  if (!session.autoRenewConfigured) {
+    return "Provider login secrets are not configured for automatic renewal.";
+  }
+  if (session.needsAttention) {
+    const attempts = session.consecutiveFailures
+      ? ` after ${session.consecutiveFailures} consecutive failed attempt${session.consecutiveFailures === 1 ? "" : "s"}`
+      : "";
+    return `Background renewal needs attention${attempts}. Court Signal will keep retrying and will block unsafe booking writes.`;
+  }
+  const refreshed = session.refreshedAt
+    ? ` Refreshed ${formatDateTime(session.refreshedAt)} SGT.`
+    : "";
+  const identity = session.loginIdentifierKind
+    ? ` Uses the ${session.loginIdentifierKind} login.`
+    : "";
+  return `Court Signal owns sign-in and renews the encrypted session automatically.${refreshed}${identity}`;
 }
 
 function SettingsSheet({
@@ -1345,10 +1388,11 @@ function SettingsSheet({
           />
         </div>
         <div className="secret-note">
-          <strong>The Dooremi token is not editable here.</strong>
+          <strong>Court Signal owns the Dooremi sign-in.</strong>
           <p>
-            It belongs in the Site’s hosted <code>DOOREMI_BEARER_TOKEN</code>
-            secret so browser code and database records can never read it.
+            Login details stay in hosted secrets. The app signs in in the
+            background and stores only an encrypted session; browser code never
+            receives either value.
           </p>
         </div>
         <button

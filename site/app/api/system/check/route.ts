@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   try {
     requireSameOrigin(request);
     await requireApiUser();
-    const client = dooremiClient();
+    const client = await dooremiClient();
     client.assertBookingCredentialCurrent();
     const result = await client.warmup();
     return data({

@@ -56,8 +56,8 @@ test("a legacy credential is never presented as live or armed", () => {
     />,
   );
   assert.match(markup, /BOOKING BLOCKED/);
-  assert.match(markup, /Token update needed/);
+  assert.match(markup, /Sign-in retry needed/);
   assert.match(markup, /AUTO.*BLOCKED/);
-  assert.match(markup, /Update the Dooremi token before the next release/);
+  assert.match(markup, /Automatic Dooremi sign-in needs attention/);
   assert.doesNotMatch(markup, /Dooremi live|AUTO.*ARMED/);
 });

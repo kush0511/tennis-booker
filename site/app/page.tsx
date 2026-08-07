@@ -50,27 +50,24 @@ export default async function Home() {
     { getRuntimeEnv },
     { getSettings, listSchedules },
     { externalWakeCoversRelease },
-    { DooremiClient },
+    { maintainDooremiSession },
   ] = await Promise.all([
     import("@/db"),
     import("@/db/repository"),
     import("@/lib/automation"),
-    import("@/lib/dooremi"),
+    import("@/app/_server/api"),
   ]);
   const [settings, schedules] = await Promise.all([
     getSettings(user.email),
     listSchedules(user.email),
   ]);
   const { currentSuggestedSessionDay } = await import("@/lib/domain");
-  const token = getRuntimeEnv().DOOREMI_BEARER_TOKEN;
-  const tokenConfigured = Boolean(token);
-  const initialBookingCredential = token
-    ? new DooremiClient({ token }).bookingCredential()
-    : {
-        status: "missing" as const,
-        issuedAt: null,
-        minimumIssuedAt: null,
-      };
+  const session = await maintainDooremiSession();
+  const tokenConfigured =
+    session.autoRenewConfigured ||
+    session.source === "managed" ||
+    session.source === "bootstrap";
+  const initialBookingCredential = session.bookingCredential;
   const automationReady = Boolean(
     getRuntimeEnv().AUTOMATION_SECRET &&
       getRuntimeEnv().AUTOMATION_TRIGGER_ENABLED === "true" &&

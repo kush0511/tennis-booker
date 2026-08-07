@@ -1,6 +1,6 @@
 import {
   data,
-  dooremiClient,
+  maintainDooremiSession,
   requireApiUser,
   routeError,
 } from "@/app/_server/api";
@@ -28,25 +28,34 @@ export async function GET() {
   try {
     const user = await requireApiUser();
     const runtime = getRuntimeEnv();
-    const [settings, heartbeat] = await Promise.all([
+    const [settings, heartbeat, session] = await Promise.all([
       getSettings(user.email),
       getAutomationHeartbeat(),
+      maintainDooremiSession(),
     ]);
     const checkedAt = new Date();
-    const bookingCredential = runtime.DOOREMI_BEARER_TOKEN
-      ? dooremiClient().bookingCredential()
-      : {
-          status: "missing" as const,
-          issuedAt: null,
-          minimumIssuedAt: null,
-        };
     const heartbeatAgeSeconds = heartbeat
       ? Math.max(0, Math.round((checkedAt.valueOf() - Date.parse(heartbeat.lastSeenAt)) / 1000))
       : null;
     return data({
       checkedAt: checkedAt.toISOString(),
-      dooremiConfigured: Boolean(runtime.DOOREMI_BEARER_TOKEN),
-      bookingCredential,
+      dooremiConfigured:
+        session.autoRenewConfigured ||
+        session.source === "managed" ||
+        session.source === "bootstrap",
+      bookingCredential: session.bookingCredential,
+      managedSession: {
+        autoRenewConfigured: session.autoRenewConfigured,
+        source: session.source,
+        refreshedAt: session.refreshedAt,
+        lastValidatedAt: session.lastValidatedAt,
+        lastRefreshAttemptAt: session.lastRefreshAttemptAt,
+        consecutiveFailures: session.consecutiveFailures,
+        lastErrorCode: session.lastErrorCode,
+        lastErrorMessage: session.lastErrorMessage,
+        loginIdentifierKind: session.loginIdentifierKind,
+        needsAttention: session.needsAttention,
+      },
       automationEnabled:
         Boolean(runtime.AUTOMATION_SECRET) &&
         runtime.AUTOMATION_TRIGGER_ENABLED === "true" &&

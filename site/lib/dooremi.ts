@@ -17,6 +17,7 @@ export const DOOREMI_IOS_USER_AGENT = DOOREMI_CURRENT_USER_AGENT;
 export const DOOREMI_CURRENT_APP_TOKEN_NOT_BEFORE =
   "2026-03-01T00:00:00+08:00";
 export const DOOREMI_ENDPOINTS = Object.freeze({
+  login: "/user/login",
   checkLogin: "/user/checkLogin",
   availability: "/user/booking/facilitySlot",
   preview: "/user/booking/orderPreview",
@@ -61,17 +62,27 @@ export class DooremiError extends Error {
 export class AuthenticationError extends DooremiError {
   constructor() {
     super(
-      "The Dooremi session has expired. Update the hosted Dooremi token.",
+      "The Dooremi session is no longer valid. Court Signal will renew it automatically.",
       "authentication",
     );
     this.name = "AuthenticationError";
   }
 }
 
+export class DooremiLoginRejectedError extends DooremiError {
+  constructor() {
+    super(
+      "Dooremi rejected the background sign-in credentials.",
+      "authentication",
+    );
+    this.name = "DooremiLoginRejectedError";
+  }
+}
+
 export class ClientUpgradeRequiredError extends DooremiError {
   constructor(
     message =
-      "Dooremi requires a credential issued by its current app before it will create bookings. Sign in to the current Dooremi app and replace the hosted token.",
+      "Dooremi requires a current-app session before it will create bookings. Court Signal must complete background sign-in before retrying.",
     httpStatus: number | null = null,
     serverDate: Date | null = null,
     elapsedMs: number | null = null,
@@ -191,6 +202,20 @@ export interface DooremiClientOptions {
   monotonicNow?: () => number;
 }
 
+export interface DooremiLoginOptions {
+  userName: string;
+  password: string;
+  fetch?: FetchLike;
+  baseUrl?: string;
+  timeoutMs?: number;
+  userAgent?: string;
+}
+
+export interface DooremiLoginResult {
+  token: string;
+  issuedAt: string | null;
+}
+
 interface RequestOptions {
   query?: Record<string, string | number>;
   body?: unknown;
@@ -273,6 +298,89 @@ function validateRawToken(token: string): void {
 }
 
 /**
+ * Signs in using the current provider-app contract. The username and password
+ * are used only for this request and are never included in results or errors.
+ */
+export async function loginDooremi(
+  options: DooremiLoginOptions,
+): Promise<DooremiLoginResult> {
+  if (!options.userName.trim() || !options.password) {
+    throw new DooremiLoginRejectedError();
+  }
+  const timeoutMs = options.timeoutMs ?? 12_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new DooremiError("The Dooremi timeout must be greater than zero.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let response: Response;
+    try {
+      response = await (options.fetch ?? globalThis.fetch.bind(globalThis))(
+        new URL(DOOREMI_ENDPOINTS.login, options.baseUrl ?? DOOREMI_BASE_URL),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "Accept-Language": "en-SG,en-GB;q=0.9,en;q=0.8",
+            "User-Agent": options.userAgent ?? DOOREMI_CURRENT_USER_AGENT,
+          },
+          body: JSON.stringify({
+            userName: options.userName,
+            password: options.password,
+          }),
+          cache: "no-store",
+          redirect: "manual",
+          signal: controller.signal,
+        },
+      );
+    } catch {
+      if (controller.signal.aborted) throw new NetworkTimeoutError();
+      throw new ConnectivityError();
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new DooremiLoginRejectedError();
+    }
+    if (response.status === 429) throw new RateLimitError();
+    if (response.status >= 500) {
+      throw new DooremiError(
+        "Dooremi is temporarily unavailable during background sign-in.",
+        "api",
+        response.status,
+      );
+    }
+    if (!response.ok) {
+      throw new DooremiError(
+        `Dooremi returned HTTP ${response.status} during background sign-in.`,
+        "api",
+        response.status,
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new DooremiError(
+        "Dooremi returned an unreadable background sign-in response.",
+      );
+    }
+    const root = asRecord(payload);
+    if (!root || root.status !== 0) throw new DooremiLoginRejectedError();
+    const content = asRecord(root.content);
+    const token = typeof content?.token === "string" ? content.token : "";
+    validateRawToken(token);
+    const issuedAt = jwtCreatedAt(token)?.toISOString() ?? null;
+    return { token, issuedAt };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
  * Cloudflare-compatible Dooremi transport.
  *
  * The token is held in an ECMAScript private field, has no getter, and is never
@@ -339,7 +447,7 @@ export class DooremiClient {
     const credential = this.bookingCredential();
     if (credential.status !== "upgrade_required") return;
     throw new ClientUpgradeRequiredError(
-      `The hosted Dooremi token was issued on ${credential.issuedAt} before the current-app migration and is rejected for booking writes. Sign in to the current Dooremi app and replace the hosted token before the next release. No booking was changed.`,
+      `The available Dooremi session was issued on ${credential.issuedAt} before the current-app migration and is rejected for booking writes. Background sign-in must renew it before the next release. No booking was changed.`,
     );
   }
 
@@ -591,7 +699,7 @@ export class DooremiClient {
         if (isAuthenticationMessage(message)) throw new AuthenticationError();
         if (isClientUpgradeMessage(message)) {
           throw new ClientUpgradeRequiredError(
-            `Dooremi rejected the booking credential: ${message} Sign in to the current Dooremi app and replace the hosted token before retrying.`,
+            `Dooremi rejected the booking credential: ${message} Background sign-in must renew it before retrying.`,
             response.status,
             serverDate,
             elapsedMs,

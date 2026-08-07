@@ -9,6 +9,8 @@ import {
   DOOREMI_IOS_USER_AGENT,
   DooremiClient,
   DooremiError,
+  DooremiLoginRejectedError,
+  loginDooremi,
   safeErrorMessage,
   type FetchLike,
 } from "../lib/dooremi.js";
@@ -28,6 +30,51 @@ function jsonResponse(payload: unknown, status = 200): Response {
     },
   });
 }
+
+test("background sign-in uses the current app contract without authorization headers", async () => {
+  const requests: Array<{ url: URL; init?: RequestInit }> = [];
+  const token = tokenWithCreatedAt(Date.parse("2026-08-08T04:00:00Z") / 1_000);
+  const result = await loginDooremi({
+    userName: "12345678",
+    password: "provider-password",
+    fetch: async (input, init) => {
+      requests.push({ url: new URL(String(input)), init });
+      return jsonResponse({
+        status: 0,
+        content: { userId: 1, userName: "12345678", token, applyState: 1 },
+      });
+    },
+  });
+
+  assert.equal(result.token, token);
+  assert.equal(result.issuedAt, "2026-08-08T04:00:00.000Z");
+  assert.equal(requests[0].url.pathname, "/user/login");
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
+    userName: "12345678",
+    password: "provider-password",
+  });
+  const headers = new Headers(requests[0].init?.headers);
+  assert.equal(headers.get("authorization"), null);
+  assert.equal(headers.get("user-agent"), DOOREMI_IOS_USER_AGENT);
+});
+
+test("background sign-in rejections never echo login secrets", async () => {
+  await assert.rejects(
+    loginDooremi({
+      userName: "12345678",
+      password: "provider-password",
+      fetch: async () =>
+        jsonResponse({
+          status: 1,
+          msg: "Wrong password provider-password for 12345678",
+        }),
+    }),
+    (error: unknown) =>
+      error instanceof DooremiLoginRejectedError &&
+      !error.message.includes("provider-password") &&
+      !error.message.includes("12345678"),
+  );
+});
 
 test("the server client sends the captured request shape without exposing its token", async () => {
   const requests: Array<{ url: URL; init?: RequestInit }> = [];

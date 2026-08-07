@@ -1,4 +1,9 @@
 import contract from "../../shared/booking-contract.json";
+import type {
+  ProviderCredentialStore,
+  ProviderCredentialSuccess,
+  StoredProviderCredential,
+} from "../lib/dooremi-session";
 import { getRuntimeEnv } from "./index";
 
 export type UserSettings = {
@@ -168,6 +173,22 @@ export function ensureSchema(): Promise<void> {
         schedule_id TEXT PRIMARY KEY,
         exported_at TEXT NOT NULL
       )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS provider_credentials (
+        provider TEXT PRIMARY KEY,
+        token_ciphertext TEXT,
+        token_iv TEXT,
+        encryption_version INTEGER,
+        issued_at TEXT,
+        refreshed_at TEXT,
+        last_validated_at TEXT,
+        last_refresh_attempt_at TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        refresh_lease_until TEXT,
+        login_identifier_kind TEXT,
+        updated_at TEXT NOT NULL
+      )`),
     ])
     .then(() => undefined)
     .catch((error) => {
@@ -176,6 +197,152 @@ export function ensureSchema(): Promise<void> {
     });
   return schemaPromise;
 }
+
+type ProviderCredentialRow = {
+  provider: string;
+  token_ciphertext: string | null;
+  token_iv: string | null;
+  encryption_version: number | null;
+  issued_at: string | null;
+  refreshed_at: string | null;
+  last_validated_at: string | null;
+  last_refresh_attempt_at: string | null;
+  consecutive_failures: number;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  refresh_lease_until: string | null;
+  login_identifier_kind: "phone" | "email" | "other" | null;
+  updated_at: string;
+};
+
+export async function getProviderCredential(
+  provider: string,
+): Promise<StoredProviderCredential | null> {
+  await ensureSchema();
+  const row = await database()
+    .prepare(`SELECT * FROM provider_credentials WHERE provider = ?`)
+    .bind(provider)
+    .first<ProviderCredentialRow>();
+  return row ? fromProviderCredentialRow(row) : null;
+}
+
+export async function claimProviderCredentialRefresh(
+  provider: string,
+  nowIso: string,
+  leaseUntilIso: string,
+): Promise<boolean> {
+  await ensureSchema();
+  const result = await database()
+    .prepare(`INSERT INTO provider_credentials (
+      provider, last_refresh_attempt_at, consecutive_failures,
+      refresh_lease_until, updated_at
+    ) VALUES (?, ?, 0, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET
+      last_refresh_attempt_at = excluded.last_refresh_attempt_at,
+      refresh_lease_until = excluded.refresh_lease_until,
+      updated_at = excluded.updated_at
+    WHERE provider_credentials.refresh_lease_until IS NULL
+      OR provider_credentials.refresh_lease_until < ?`)
+    .bind(provider, nowIso, leaseUntilIso, nowIso, nowIso)
+    .run();
+  return Number(result.meta.changes || 0) === 1;
+}
+
+export async function saveProviderCredentialSuccess(
+  provider: string,
+  success: ProviderCredentialSuccess,
+): Promise<void> {
+  await ensureSchema();
+  await database()
+    .prepare(`INSERT INTO provider_credentials (
+      provider, token_ciphertext, token_iv, encryption_version, issued_at,
+      refreshed_at, last_validated_at, last_refresh_attempt_at,
+      consecutive_failures, last_error_code, last_error_message,
+      refresh_lease_until, login_identifier_kind, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET
+      token_ciphertext = excluded.token_ciphertext,
+      token_iv = excluded.token_iv,
+      encryption_version = excluded.encryption_version,
+      issued_at = excluded.issued_at,
+      refreshed_at = excluded.refreshed_at,
+      last_validated_at = excluded.last_validated_at,
+      last_refresh_attempt_at = excluded.last_refresh_attempt_at,
+      consecutive_failures = 0,
+      last_error_code = NULL,
+      last_error_message = NULL,
+      refresh_lease_until = NULL,
+      login_identifier_kind = excluded.login_identifier_kind,
+      updated_at = excluded.updated_at`)
+    .bind(
+      provider,
+      success.tokenCiphertext,
+      success.tokenIv,
+      success.encryptionVersion,
+      success.issuedAt,
+      success.refreshedAt,
+      success.lastValidatedAt,
+      success.refreshedAt,
+      success.loginIdentifierKind,
+      success.refreshedAt,
+    )
+    .run();
+}
+
+export async function recordProviderCredentialFailure(
+  provider: string,
+  attemptedAt: string,
+  code: string,
+  message: string,
+): Promise<void> {
+  await ensureSchema();
+  const sanitizedCode = code.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+  const sanitizedMessage = message
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
+    .slice(0, 320);
+  await database()
+    .prepare(`INSERT INTO provider_credentials (
+      provider, last_refresh_attempt_at, consecutive_failures,
+      last_error_code, last_error_message, refresh_lease_until, updated_at
+    ) VALUES (?, ?, 1, ?, ?, NULL, ?)
+    ON CONFLICT(provider) DO UPDATE SET
+      last_refresh_attempt_at = excluded.last_refresh_attempt_at,
+      consecutive_failures = provider_credentials.consecutive_failures + 1,
+      last_error_code = excluded.last_error_code,
+      last_error_message = excluded.last_error_message,
+      refresh_lease_until = NULL,
+      updated_at = excluded.updated_at`)
+    .bind(
+      provider,
+      attemptedAt,
+      sanitizedCode,
+      sanitizedMessage,
+      attemptedAt,
+    )
+    .run();
+}
+
+export async function recordProviderCredentialValidation(
+  provider: string,
+  validatedAt: string,
+): Promise<void> {
+  await ensureSchema();
+  await database()
+    .prepare(`UPDATE provider_credentials SET
+      last_validated_at = ?, consecutive_failures = 0,
+      last_error_code = NULL, last_error_message = NULL, updated_at = ?
+      WHERE provider = ?`)
+    .bind(validatedAt, validatedAt, provider)
+    .run();
+}
+
+export const providerCredentialStore: ProviderCredentialStore = {
+  read: getProviderCredential,
+  claimRefresh: claimProviderCredentialRefresh,
+  saveSuccess: saveProviderCredentialSuccess,
+  recordFailure: recordProviderCredentialFailure,
+  recordValidation: recordProviderCredentialValidation,
+};
 
 export async function getSettings(userEmail: string): Promise<UserSettings> {
   await ensureSchema();
@@ -586,6 +753,27 @@ function fromScheduleRow(row: ScheduleRow): StoredSchedule {
     cancelledBookingIds: parseArray<number>(row.cancelled_booking_ids_json),
     submitSkewMs: row.submit_skew_ms,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function fromProviderCredentialRow(
+  row: ProviderCredentialRow,
+): StoredProviderCredential {
+  return {
+    provider: row.provider,
+    tokenCiphertext: row.token_ciphertext,
+    tokenIv: row.token_iv,
+    encryptionVersion: row.encryption_version,
+    issuedAt: row.issued_at,
+    refreshedAt: row.refreshed_at,
+    lastValidatedAt: row.last_validated_at,
+    lastRefreshAttemptAt: row.last_refresh_attempt_at,
+    consecutiveFailures: row.consecutive_failures,
+    lastErrorCode: row.last_error_code,
+    lastErrorMessage: row.last_error_message,
+    refreshLeaseUntil: row.refresh_lease_until,
+    loginIdentifierKind: row.login_identifier_kind,
     updatedAt: row.updated_at,
   };
 }

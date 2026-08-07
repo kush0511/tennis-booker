@@ -8,6 +8,7 @@
     "acceptLanguage": "en-SG,en-GB;q=0.9,en;q=0.8",
     "timeoutMilliseconds": 12000,
     "endpoints": {
+      "login": "/user/login",
       "checkLogin": "/user/checkLogin",
       "availability": "/user/booking/facilitySlot",
       "preview": "/user/booking/orderPreview",

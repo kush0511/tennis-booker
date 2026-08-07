@@ -115,3 +115,20 @@ export const scheduleFailureExports = sqliteTable("schedule_failure_exports", {
   scheduleId: text("schedule_id").primaryKey(),
   exportedAt: text("exported_at").notNull(),
 });
+
+export const providerCredentials = sqliteTable("provider_credentials", {
+  provider: text("provider").primaryKey(),
+  tokenCiphertext: text("token_ciphertext"),
+  tokenIv: text("token_iv"),
+  encryptionVersion: integer("encryption_version"),
+  issuedAt: text("issued_at"),
+  refreshedAt: text("refreshed_at"),
+  lastValidatedAt: text("last_validated_at"),
+  lastRefreshAttemptAt: text("last_refresh_attempt_at"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
+  refreshLeaseUntil: text("refresh_lease_until"),
+  loginIdentifierKind: text("login_identifier_kind"),
+  updatedAt: text("updated_at").notNull(),
+});

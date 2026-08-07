@@ -16,7 +16,8 @@ export async function GET(request: Request) {
       throw new HttpError(409, "Add your facility and category IDs first.");
     }
     const eventDay = normalizeEventDay(new URL(request.url).searchParams.get("date") || "");
-    const availability = await dooremiClient().availability(
+    const client = await dooremiClient();
+    const availability = await client.availability(
       eventDay,
       settings.facilityId,
       settings.facilityCategoryId,

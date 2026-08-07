@@ -1,6 +1,12 @@
 import { getChatGPTUser, type ChatGPTUser } from "@/app/chatgpt-auth";
 import { getRuntimeEnv } from "@/db";
-import { DooremiClient, safeErrorMessage } from "@/lib/dooremi";
+import { providerCredentialStore } from "@/db/repository";
+import { safeErrorMessage } from "@/lib/dooremi";
+import {
+  DooremiSessionManager,
+  type DooremiClientRequest,
+  type DooremiSessionStatus,
+} from "@/lib/dooremi-session";
 
 export class HttpError extends Error {
   readonly status: number;
@@ -22,15 +28,37 @@ export async function requireApiUser(): Promise<ChatGPTUser> {
   throw new HttpError(401, "Sign in with ChatGPT to continue.");
 }
 
-export function dooremiClient(): DooremiClient {
-  const token = getRuntimeEnv().DOOREMI_BEARER_TOKEN;
-  if (!token) {
+function dooremiSessionManager(): DooremiSessionManager {
+  const runtime = getRuntimeEnv();
+  return new DooremiSessionManager({
+    config: {
+      userName: runtime.DOOREMI_USERNAME,
+      fallbackUserName: runtime.DOOREMI_USERNAME_FALLBACK,
+      password: runtime.DOOREMI_PASSWORD,
+      encryptionKey: runtime.DOOREMI_TOKEN_ENCRYPTION_KEY,
+      bootstrapToken: runtime.DOOREMI_BEARER_TOKEN,
+    },
+    store: providerCredentialStore,
+  });
+}
+
+export async function dooremiClient(request: DooremiClientRequest = {}) {
+  try {
+    return await dooremiSessionManager().client(request);
+  } catch (error) {
     throw new HttpError(
       503,
-      "The hosted Dooremi token is not configured yet.",
+      safeErrorMessage(error) || "The app-managed Dooremi session is unavailable.",
     );
   }
-  return new DooremiClient({ token });
+}
+
+export async function maintainDooremiSession(): Promise<DooremiSessionStatus> {
+  return dooremiSessionManager().maintain();
+}
+
+export async function dooremiSessionStatus(): Promise<DooremiSessionStatus> {
+  return dooremiSessionManager().status();
 }
 
 export async function readJsonObject(

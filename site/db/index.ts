@@ -5,6 +5,10 @@ import * as schema from "./schema";
 export type TennisRuntimeEnv = {
   DB: D1Database;
   DOOREMI_BEARER_TOKEN?: string;
+  DOOREMI_USERNAME?: string;
+  DOOREMI_USERNAME_FALLBACK?: string;
+  DOOREMI_PASSWORD?: string;
+  DOOREMI_TOKEN_ENCRYPTION_KEY?: string;
   DOOREMI_FACILITY_ID?: string;
   DOOREMI_CATEGORY_ID?: string;
   AUTOMATION_SECRET?: string;

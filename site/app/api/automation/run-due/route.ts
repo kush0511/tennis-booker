@@ -7,7 +7,12 @@ import {
   markScheduleFailureReported,
   recordAutomationHeartbeat,
 } from "@/db/repository";
-import { data, HttpError, routeError } from "@/app/_server/api";
+import {
+  data,
+  HttpError,
+  maintainDooremiSession,
+  routeError,
+} from "@/app/_server/api";
 import { domainConfig, executeStoredSchedule } from "@/app/_server/execution";
 import { HOSTED_ARMING_WINDOW_SECONDS } from "@/lib/automation";
 
@@ -63,6 +68,13 @@ export async function POST(request: Request) {
       scheduledAt,
       cron: "Google Cloud Scheduler",
     });
+    const credentialHealth = await maintainDooremiSession().catch((error) => {
+      console.error(
+        "Court Signal credential maintenance failed",
+        error instanceof Error ? error.message : "Unknown credential error.",
+      );
+      return null;
+    });
     await exportUnreportedFailures();
     const due = await listDueSchedules(now, HOSTED_ARMING_WINDOW_SECONDS);
     // Every plan for the same release boundary must arm independently. A
@@ -91,7 +103,20 @@ export async function POST(request: Request) {
       )
     ).filter((result) => result !== null);
     await exportUnreportedFailures();
-    return data({ checkedAt: now, schedules: results });
+    return data({
+      checkedAt: now,
+      credential: credentialHealth
+        ? {
+            source: credentialHealth.source,
+            autoRenewConfigured: credentialHealth.autoRenewConfigured,
+            refreshedAt: credentialHealth.refreshedAt,
+            lastValidatedAt: credentialHealth.lastValidatedAt,
+            consecutiveFailures: credentialHealth.consecutiveFailures,
+            needsAttention: credentialHealth.needsAttention,
+          }
+        : { needsAttention: true },
+      schedules: results,
+    });
   } catch (error) {
     return routeError(error);
   }

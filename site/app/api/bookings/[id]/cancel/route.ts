@@ -7,6 +7,7 @@ import {
   requireSameOrigin,
   routeError,
 } from "@/app/_server/api";
+import { DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS } from "@/lib/dooremi-session";
 
 export async function POST(
   request: Request,
@@ -16,7 +17,10 @@ export async function POST(
     requireSameOrigin(request);
     await requireApiUser();
     const id = positiveInteger((await context.params).id, "Booking ID");
-    const client = dooremiClient();
+    const client = await dooremiClient({
+      freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
+      requireManagedRefresh: true,
+    });
     const bookings = await client.bookingHistory({ pageSize: 50 });
     const booking = bookings.find((item) => item.id === id);
     if (!booking) throw new HttpError(404, "That booking was not found.");

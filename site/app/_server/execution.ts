@@ -10,6 +10,7 @@ import {
   type BookingTransactionResult,
 } from "@/lib/transaction";
 import { safeErrorMessage } from "@/lib/dooremi";
+import { DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS } from "@/lib/dooremi-session";
 import {
   effectiveHostedPreparationLead,
   HOSTED_AMBIGUOUS_RECONCILIATION_DELAYS_MILLISECONDS,
@@ -80,7 +81,11 @@ export async function executeImmediate(
   schedule: Schedule,
   config: Config,
 ): Promise<ExecutionResult> {
-  const result = await executeBookingTransaction(dooremiClient(), schedule, {
+  const client = await dooremiClient({
+    freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
+    requireManagedRefresh: true,
+  });
+  const result = await executeBookingTransaction(client, schedule, {
     maxSessions: config.maxSessionsPerBooking,
     warmupPasses: 1,
   });
@@ -139,7 +144,11 @@ export async function executeStoredSchedule(
   );
 
   try {
-    const result = await executeBookingTransaction(dooremiClient(), schedule, {
+    const client = await dooremiClient({
+      freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
+      requireManagedRefresh: true,
+    });
+    const result = await executeBookingTransaction(client, schedule, {
       maxSessions: config.maxSessionsPerBooking,
       warmupPasses: 2,
       cancelAt: new Date(
