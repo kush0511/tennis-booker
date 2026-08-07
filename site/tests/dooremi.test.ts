@@ -5,12 +5,19 @@ import historyFixture from "./fixtures/history.json" with { type: "json" };
 import {
   AmbiguousSubmissionError,
   AuthenticationError,
+  ClientUpgradeRequiredError,
   DOOREMI_IOS_USER_AGENT,
   DooremiClient,
   DooremiError,
   safeErrorMessage,
   type FetchLike,
 } from "../lib/dooremi.js";
+
+function tokenWithCreatedAt(createdAtSeconds: number): string {
+  const encode = (value: unknown) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ ct: createdAtSeconds })}.signature`;
+}
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -151,6 +158,70 @@ test("a nonzero JSON status is an explicit rejection that can be retried safely"
   );
 });
 
+test("credential inspection identifies pre-migration tokens without exposing them", () => {
+  const stale = new DooremiClient({
+    token: tokenWithCreatedAt(Date.parse("2026-01-14T15:50:16Z") / 1_000),
+  });
+  const current = new DooremiClient({
+    token: tokenWithCreatedAt(Date.parse("2026-08-07T04:00:00Z") / 1_000),
+  });
+  const opaque = new DooremiClient({ token: "opaque-secret" });
+
+  assert.deepEqual(stale.bookingCredential(), {
+    status: "upgrade_required",
+    issuedAt: "2026-01-14T15:50:16.000Z",
+    minimumIssuedAt: "2026-02-28T16:00:00.000Z",
+  });
+  assert.equal(current.bookingCredential().status, "current");
+  assert.equal(opaque.bookingCredential().status, "unknown");
+  assert.equal(Object.keys(stale).some((key) => /token/i.test(key)), false);
+});
+
+test("a stale credential is blocked before any booking request is transmitted", async () => {
+  let requests = 0;
+  const client = new DooremiClient({
+    token: tokenWithCreatedAt(Date.parse("2026-01-14T15:50:16Z") / 1_000),
+    fetch: async () => {
+      requests += 1;
+      return jsonResponse({ status: 0 });
+    },
+  });
+  await assert.rejects(
+    client.createSingleBooking({
+      eventDay: "2026-08-21",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    }),
+    (error: unknown) =>
+      error instanceof ClientUpgradeRequiredError &&
+      error.code === "client_upgrade_required" &&
+      /No booking was changed/.test(error.message),
+  );
+  assert.equal(requests, 0);
+});
+
+test("the provider's latest-version rejection is terminal rather than retryable", async () => {
+  const client = new DooremiClient({
+    token: tokenWithCreatedAt(Date.parse("2026-08-07T04:00:00Z") / 1_000),
+    fetch: async () =>
+      jsonResponse({
+        status: 1,
+        msg: "Please update to the latest version to complete payment.",
+      }),
+  });
+  await assert.rejects(
+    client.createSingleBooking({
+      eventDay: "2026-08-21",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    }),
+    (error: unknown) =>
+      error instanceof ClientUpgradeRequiredError &&
+      error.code === "client_upgrade_required" &&
+      error.elapsedMs !== null,
+  );
+});
+
 test("authentication failures and sanitization never echo credentials", async () => {
   const client = new DooremiClient({
     token: "hosted-secret-value",
@@ -160,5 +231,9 @@ test("authentication failures and sanitization never echo credentials", async ()
   assert.equal(
     safeErrorMessage(new Error("failed with Bearer hosted-secret-value")),
     "failed with Bearer [redacted]",
+  );
+  assert.equal(
+    safeErrorMessage("Please update to the latest version to complete payment."),
+    "Please update to the latest version to complete payment.",
   );
 });

@@ -178,6 +178,8 @@ export class RebookingSubmissionError extends Error {
 }
 
 export interface BookingTransactionClient {
+  /** Read-only local credential inspection; must run before any cancellation. */
+  assertBookingCredentialCurrent?(): void;
   warmup(options?: { timeoutMs?: number }): Promise<WarmupResult>;
   bookingHistory(options?: {
     pageSize?: number;
@@ -999,6 +1001,7 @@ export async function executeBookingTransaction(
       },
     );
   }
+  client.assertBookingCredentialCurrent?.();
   const history =
     options.activeBookings ??
     activeTennisBookings(await client.bookingHistory({ pageSize: 50 }));

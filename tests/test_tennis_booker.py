@@ -84,6 +84,18 @@ class AvailabilityTests(unittest.TestCase):
 
 
 class APITests(unittest.TestCase):
+    @staticmethod
+    def token_with_created_at(created_at):
+        def encode(value):
+            return tb.base64.urlsafe_b64encode(
+                json.dumps(value).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+
+        return "{}.{}.signature".format(
+            encode({"alg": "HS256", "typ": "JWT"}),
+            encode({"ct": created_at}),
+        )
+
     def test_unauthorized_response_has_actionable_message(self):
         response = mock.Mock(
             status=401,
@@ -113,6 +125,46 @@ class APITests(unittest.TestCase):
                 ],
             },
         )
+
+    def test_pre_migration_credential_is_blocked_before_booking_transport(self):
+        stale = self.token_with_created_at(
+            dt.datetime(2026, 1, 14, 15, 50, 16, tzinfo=dt.timezone.utc).timestamp()
+        )
+        client = tb.DooremiClient()
+        client._request = mock.Mock()
+        schedule = {
+            "event_day": "2026-08-21",
+            "event_times": ["07:00-08:00"],
+            "facility_id": 9001,
+        }
+        with self.assertRaisesRegex(
+            tb.ClientUpgradeRequiredError,
+            "Nothing was cancelled or submitted",
+        ):
+            client.create_booking(schedule, stale)
+        client._request.assert_not_called()
+
+    def test_current_app_credential_age_is_accepted(self):
+        current = self.token_with_created_at(
+            dt.datetime(2026, 8, 7, 4, 0, tzinfo=dt.timezone.utc).timestamp()
+        )
+        self.assertEqual(tb.booking_credential_info(current)["status"], "current")
+
+    def test_latest_version_provider_message_is_a_terminal_upgrade_error(self):
+        response = mock.Mock(status=200, will_close=False)
+        response.read.return_value = json.dumps(
+            {
+                "status": 1,
+                "msg": "Please update to the latest version to complete payment.",
+            }
+        ).encode("utf-8")
+        response.getheaders.return_value = []
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        client = tb.DooremiClient()
+        client._connection = connection
+        with self.assertRaises(tb.ClientUpgradeRequiredError):
+            client.warmup("opaque-token")
 
     def test_preview_payload_can_describe_two_sessions(self):
         schedule = {

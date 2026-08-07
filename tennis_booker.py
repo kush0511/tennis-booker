@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 """Local-first Dooremi tennis booking CLI for macOS."""
 
-import contextlib
+import base64
 import concurrent.futures
+import contextlib
 import dataclasses
 import datetime as dt
 import fcntl
@@ -32,6 +33,7 @@ from tennis_core import (
     AuthenticationError,
     BookerError,
     CancellationError,
+    ClientUpgradeRequiredError,
     Config,
     ConnectivityError,
     InputError,
@@ -65,7 +67,8 @@ KEYCHAIN_SERVICE = "app.tennis-booker.local"
 KEYCHAIN_ACCOUNT = "dooremi-bearer"
 AGENT_LABEL = "app.tennis-booker.local"
 BASE_URL = "https://api.dooremi.com.sg"
-IOS_USER_AGENT = "LifeUp/1 CFNetwork/3860.600.12 Darwin/25.5.0"
+IOS_USER_AGENT = "okhttp/4.9.2"
+CURRENT_APP_TOKEN_NOT_BEFORE = dt.datetime(2026, 3, 1, tzinfo=SGT)
 
 
 class Paths:
@@ -97,6 +100,62 @@ class Paths:
 
 def now_sgt():
     return dt.datetime.now(tz=SGT)
+
+
+def booking_credential_info(token):
+    """Inspect only the JWT creation timestamp; never return credential bytes."""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {
+            "status": "unknown",
+            "issued_at": None,
+            "minimum_issued_at": CURRENT_APP_TOKEN_NOT_BEFORE.isoformat(),
+        }
+    try:
+        encoded = parts[1] + ("=" * (-len(parts[1]) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+        raw = payload.get("ct")
+        if isinstance(raw, str) and not re.fullmatch(r"\d+(?:\.\d+)?", raw):
+            issued_at = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if issued_at.tzinfo is None:
+                issued_at = issued_at.replace(tzinfo=dt.timezone.utc)
+        else:
+            numeric = float(raw)
+            if numeric > 100_000_000_000:
+                numeric /= 1000
+            issued_at = dt.datetime.fromtimestamp(numeric, tz=dt.timezone.utc)
+    except (
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        issued_at = None
+    return {
+        "status": (
+            "unknown"
+            if issued_at is None
+            else "upgrade_required"
+            if issued_at < CURRENT_APP_TOKEN_NOT_BEFORE
+            else "current"
+        ),
+        "issued_at": issued_at.isoformat() if issued_at else None,
+        "minimum_issued_at": CURRENT_APP_TOKEN_NOT_BEFORE.isoformat(),
+    }
+
+
+def assert_booking_credential_current(token):
+    credential = booking_credential_info(token)
+    if credential["status"] != "upgrade_required":
+        return
+    raise ClientUpgradeRequiredError(
+        "The Dooremi token was issued on {} before the current-app migration "
+        "and is rejected for booking writes. Sign in to the current Dooremi "
+        "app and import a fresh token before the next release. Nothing was "
+        "cancelled or submitted.".format(credential["issued_at"])
+    )
 
 
 def mac_power_state():
@@ -483,14 +542,22 @@ class DooremiClient:
             raise APIError("Dooremi returned an unreadable response.") from error
         if payload.get("status") != 0:
             message = str(payload.get("msg", "Unknown error"))
-            error_type = (
-                AuthenticationError
-                if any(
-                    word in message.lower()
-                    for word in ("login", "token", "expired", "unauthorized")
+            if re.search(
+                r"update\s+(?:to\s+)?the\s+latest\s+version|"
+                r"latest\s+version.*(?:booking|payment)",
+                message,
+                flags=re.IGNORECASE,
+            ):
+                error_type = ClientUpgradeRequiredError
+            else:
+                error_type = (
+                    AuthenticationError
+                    if any(
+                        word in message.lower()
+                        for word in ("login", "token", "expired", "unauthorized")
+                    )
+                    else APIError
                 )
-                else APIError
-            )
             raise error_type(
                 "Dooremi rejected the request ({}): {}".format(
                     payload.get("status"), message
@@ -551,6 +618,7 @@ class DooremiClient:
         }
 
     def create_booking(self, schedule, token):
+        assert_booking_credential_current(token)
         batch_schedule, active_bookings = prepare_rebooking_batch(
             schedule,
             token,
@@ -587,6 +655,7 @@ class DooremiClient:
             close_extra_booking_clients(clients)
 
     def _create_single_booking(self, schedule, token):
+        assert_booking_credential_current(token)
         event_times = schedule_event_times(schedule)
         if len(event_times) != 1:
             raise InputError(
@@ -1059,6 +1128,7 @@ class Executor:
             self._sleep_until(
                 release - dt.timedelta(seconds=config.cancellation_lead_seconds)
             )
+            assert_booking_credential_current(token)
             preparation_started = time.monotonic()
             batch_schedule, active_bookings = prepare_rebooking_batch(
                 schedule,

@@ -7,6 +7,7 @@ import rebookingFixture from "./fixtures/rebooking-contract.json" with {
 import type { BookingRecord, Schedule } from "../lib/domain.js";
 import {
   AmbiguousSubmissionError,
+  ClientUpgradeRequiredError,
   DooremiError,
   type CancelBookingResult,
   type SingleBookingResult,
@@ -90,6 +91,41 @@ test("the six-session limit is checked before cancellation", async () => {
     /Nothing was cancelled/,
   );
   assert.equal(cancelCalls, 0);
+});
+
+test("credential incompatibility stops before history, warmup, cancellation, or submission", async () => {
+  const calls: string[] = [];
+  const client: BookingTransactionClient = {
+    assertBookingCredentialCurrent: () => {
+      calls.push("credential");
+      throw new ClientUpgradeRequiredError("legacy credential");
+    },
+    warmup: async () => {
+      calls.push("warmup");
+      return { elapsedMs: 1, serverDate: null };
+    },
+    bookingHistory: async () => {
+      calls.push("history");
+      return [confirmedBooking(501)];
+    },
+    cancelBooking: async (bookingId) => {
+      calls.push("cancel");
+      return { message: "cancelled", bookingId };
+    },
+    createSingleBooking: async () => {
+      calls.push("create");
+      return { message: "ok", bookingOrderId: 1 };
+    },
+  };
+  await assert.rejects(
+    executeBookingTransaction(client, {
+      eventDay: "2026-08-21",
+      eventTimes: ["07:00-08:00"],
+      facilityId: 9001,
+    }),
+    ClientUpgradeRequiredError,
+  );
+  assert.deepEqual(calls, ["credential"]);
 });
 
 test("an accepted cancellation is polled without being submitted again", async () => {
@@ -613,6 +649,39 @@ test("an explicit rejection follows the complete bounded retry ladder", async ()
   assert.equal(client.submitted.length, 5);
   assert.ok(timing.some((message) => message.includes("at T+10ms")));
   assert.ok(timing.some((message) => message.includes("returned in")));
+});
+
+test("a current-app policy rejection is never retried", async () => {
+  let submissions = 0;
+  const client: BookingTransactionClient = {
+    warmup: async () => ({ elapsedMs: 1, serverDate: null }),
+    bookingHistory: async () => [],
+    cancelBooking: async (bookingId) => ({ message: "cancelled", bookingId }),
+    createSingleBooking: async () => {
+      submissions += 1;
+      throw new ClientUpgradeRequiredError(
+        "Please update to the latest version to complete payment.",
+      );
+    },
+  };
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-08-21",
+        eventTimes: ["07:00-08:00"],
+        facilityId: 9001,
+      },
+      {
+        rejectedSubmissionRetryDelaysMilliseconds: [0, 25, 100, 400, 1_000],
+        sleep: noSleep,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof BookingSubmissionError &&
+      error.failures[0]?.error instanceof ClientUpgradeRequiredError,
+  );
+  assert.equal(submissions, 1);
 });
 
 test("the hosted retry train closes the opening gap and covers lagging provider clocks", async () => {

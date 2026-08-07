@@ -1,4 +1,9 @@
-import { data, requireApiUser, routeError } from "@/app/_server/api";
+import {
+  data,
+  dooremiClient,
+  requireApiUser,
+  routeError,
+} from "@/app/_server/api";
 import { getRuntimeEnv } from "@/db";
 import { getAutomationHeartbeat, getSettings } from "@/db/repository";
 import {
@@ -28,12 +33,20 @@ export async function GET() {
       getAutomationHeartbeat(),
     ]);
     const checkedAt = new Date();
+    const bookingCredential = runtime.DOOREMI_BEARER_TOKEN
+      ? dooremiClient().bookingCredential()
+      : {
+          status: "missing" as const,
+          issuedAt: null,
+          minimumIssuedAt: null,
+        };
     const heartbeatAgeSeconds = heartbeat
       ? Math.max(0, Math.round((checkedAt.valueOf() - Date.parse(heartbeat.lastSeenAt)) / 1000))
       : null;
     return data({
       checkedAt: checkedAt.toISOString(),
       dooremiConfigured: Boolean(runtime.DOOREMI_BEARER_TOKEN),
+      bookingCredential,
       automationEnabled:
         Boolean(runtime.AUTOMATION_SECRET) &&
         runtime.AUTOMATION_TRIGGER_ENABLED === "true" &&

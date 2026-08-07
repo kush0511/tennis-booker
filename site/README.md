@@ -9,7 +9,8 @@ server-only.
 
 Configure these through the Site settings in ChatGPT before redeploying:
 
-- `DOOREMI_BEARER_TOKEN` — secret; the raw token without a `Bearer` prefix.
+- `DOOREMI_BEARER_TOKEN` — secret; a token captured after signing in to the
+  current Dooremi app, stored as the raw value without a `Bearer` prefix.
 - `AUTOMATION_SECRET` — secret used only by the signed runner endpoint.
 - `DOOREMI_FACILITY_ID` — optional initial facility ID.
 - `DOOREMI_CATEGORY_ID` — optional initial category ID.
@@ -19,6 +20,11 @@ for the production deployment.
 
 The application never writes the Dooremi token to D1, browser state, HTML,
 serialized errors, or logs.
+
+Tokens issued before the current Dooremi app migration are treated as
+read-only: the provider still accepts availability and preview calls but rejects
+booking writes. Court Signal detects those credentials locally and stops before
+history discovery, cancellation, or booking submission.
 
 ## Commands
 

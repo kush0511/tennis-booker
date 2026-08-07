@@ -11,8 +11,11 @@ import {
 } from "./domain.js";
 
 export const DOOREMI_BASE_URL = "https://api.dooremi.com.sg";
-export const DOOREMI_IOS_USER_AGENT =
-  "LifeUp/1 CFNetwork/3860.600.12 Darwin/25.5.0";
+export const DOOREMI_CURRENT_USER_AGENT = "okhttp/4.9.2";
+// Retained as a compatibility export for the shared contract and older imports.
+export const DOOREMI_IOS_USER_AGENT = DOOREMI_CURRENT_USER_AGENT;
+export const DOOREMI_CURRENT_APP_TOKEN_NOT_BEFORE =
+  "2026-03-01T00:00:00+08:00";
 export const DOOREMI_ENDPOINTS = Object.freeze({
   checkLogin: "/user/checkLogin",
   availability: "/user/booking/facilitySlot",
@@ -28,6 +31,7 @@ export type DooremiErrorCode =
   | "timeout"
   | "connectivity"
   | "rate_limit"
+  | "client_upgrade_required"
   | "rejected"
   | "api"
   | "ambiguous_submission";
@@ -61,6 +65,25 @@ export class AuthenticationError extends DooremiError {
       "authentication",
     );
     this.name = "AuthenticationError";
+  }
+}
+
+export class ClientUpgradeRequiredError extends DooremiError {
+  constructor(
+    message =
+      "Dooremi requires a credential issued by its current app before it will create bookings. Sign in to the current Dooremi app and replace the hosted token.",
+    httpStatus: number | null = null,
+    serverDate: Date | null = null,
+    elapsedMs: number | null = null,
+  ) {
+    super(
+      message,
+      "client_upgrade_required",
+      httpStatus,
+      serverDate,
+      elapsedMs,
+    );
+    this.name = "ClientUpgradeRequiredError";
   }
 }
 
@@ -103,7 +126,12 @@ export class AmbiguousSubmissionError extends DooremiError {
 }
 
 export function safeErrorMessage(error: unknown): string {
-  const original = error instanceof Error ? error.message : "Unexpected error";
+  const original =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "Unexpected error";
   return original
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
     .replace(
@@ -135,6 +163,17 @@ export interface BookingPreview {
   facilityName: string | null;
   eventDay: string;
   eventTimes: string[];
+}
+
+export type BookingCredentialStatus =
+  | "current"
+  | "upgrade_required"
+  | "unknown";
+
+export interface BookingCredentialInfo {
+  status: BookingCredentialStatus;
+  issuedAt: string | null;
+  minimumIssuedAt: string;
 }
 
 export type FetchLike = (
@@ -192,6 +231,36 @@ function isAuthenticationMessage(message: string): boolean {
   );
 }
 
+function isClientUpgradeMessage(message: string): boolean {
+  return /update\s+(?:to\s+)?the\s+latest\s+version|latest\s+version.*(?:booking|payment)/i.test(
+    message,
+  );
+}
+
+function jwtCreatedAt(token: string): Date | null {
+  const encoded = token.split(".")[1];
+  if (!encoded) return null;
+  try {
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(
+      normalized.length + ((4 - (normalized.length % 4)) % 4),
+      "=",
+    );
+    const payload = asRecord(JSON.parse(globalThis.atob(padded)));
+    const raw = payload?.ct;
+    if (typeof raw === "string" && raw.trim() && !/^\d+(?:\.\d+)?$/.test(raw)) {
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.valueOf()) ? null : parsed;
+    }
+    const numeric = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    const parsed = new Date(numeric < 100_000_000_000 ? numeric * 1_000 : numeric);
+    return Number.isNaN(parsed.valueOf()) ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+
 function validateRawToken(token: string): void {
   if (!token || token.trim() !== token || /^Bearer\s/i.test(token)) {
     throw new DooremiError(
@@ -246,6 +315,32 @@ export class DooremiClient {
       userAgent: this.#userAgent,
       monotonicNow: this.#monotonicNow,
     });
+  }
+
+  bookingCredential(): BookingCredentialInfo {
+    const issuedAt = jwtCreatedAt(this.#token);
+    const minimumIssuedAt = new Date(
+      DOOREMI_CURRENT_APP_TOKEN_NOT_BEFORE,
+    );
+    return {
+      status:
+        issuedAt === null
+          ? "unknown"
+          : issuedAt.valueOf() < minimumIssuedAt.valueOf()
+            ? "upgrade_required"
+            : "current",
+      issuedAt: issuedAt?.toISOString() ?? null,
+      minimumIssuedAt: minimumIssuedAt.toISOString(),
+    };
+  }
+
+  /** Fails before history reads, cancellation, or booking submission. */
+  assertBookingCredentialCurrent(): void {
+    const credential = this.bookingCredential();
+    if (credential.status !== "upgrade_required") return;
+    throw new ClientUpgradeRequiredError(
+      `The hosted Dooremi token was issued on ${credential.issuedAt} before the current-app migration and is rejected for booking writes. Sign in to the current Dooremi app and replace the hosted token before the next release. No booking was changed.`,
+    );
   }
 
   async warmup(options: { timeoutMs?: number } = {}): Promise<WarmupResult> {
@@ -309,6 +404,7 @@ export class DooremiClient {
   }
 
   async createSingleBooking(schedule: Schedule): Promise<SingleBookingResult> {
+    this.assertBookingCredentialCurrent();
     const targets = normalizeBookingTargets(schedule);
     if (targets.length !== 1) {
       throw new DooremiError(
@@ -493,6 +589,14 @@ export class DooremiClient {
       if (root.status !== 0) {
         const message = safeErrorMessage(text(root.msg, "Unknown error"));
         if (isAuthenticationMessage(message)) throw new AuthenticationError();
+        if (isClientUpgradeMessage(message)) {
+          throw new ClientUpgradeRequiredError(
+            `Dooremi rejected the booking credential: ${message} Sign in to the current Dooremi app and replace the hosted token before retrying.`,
+            response.status,
+            serverDate,
+            elapsedMs,
+          );
+        }
         throw new DooremiError(
           `Dooremi rejected the request (${String(root.status)}): ${message}`,
           "rejected",

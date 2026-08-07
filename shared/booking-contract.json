@@ -4,7 +4,7 @@
   "timezoneOffset": "+08:00",
   "api": {
     "baseUrl": "https://api.dooremi.com.sg",
-    "userAgent": "LifeUp/1 CFNetwork/3860.600.12 Darwin/25.5.0",
+    "userAgent": "okhttp/4.9.2",
     "acceptLanguage": "en-SG,en-GB;q=0.9,en;q=0.8",
     "timeoutMilliseconds": 12000,
     "endpoints": {

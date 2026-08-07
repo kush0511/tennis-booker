@@ -28,8 +28,8 @@ to evolve in parallel.
 ## Safety model
 
 - The Dooremi Bearer token is stored in macOS Keychain.
-- Tokens are preserved byte-for-byte and requests use the iPhone `LifeUp/1`
-  CFNetwork user-agent observed in the capture.
+- Tokens are preserved byte-for-byte and requests use the current Dooremi
+  Android transport signature (`okhttp/4.9.2`).
 - The token is never written to the repository, configuration, schedules, or
   logs.
 - A multi-session attempt follows Dooremi’s documented temporary workaround:
@@ -89,7 +89,9 @@ tennis-booker --classic
 ```
 
 On first run, open **System → Connect** and provide the path to a local HAR
-capture. The HAR is only read to import the Bearer token into Keychain.
+capture from the current Dooremi app. The HAR is only read to import the Bearer
+token into Keychain. LifeUp-era tokens can still read availability but are
+rejected for booking writes and are blocked before cancellation.
 Facility identifiers are deliberately not included in this repository. Set
 the values for your property before loading availability:
 

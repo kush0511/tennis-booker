@@ -21,6 +21,10 @@ class AuthenticationError(APIError):
     pass
 
 
+class ClientUpgradeRequiredError(APIError):
+    pass
+
+
 class NetworkTimeoutError(APIError):
     pass
 

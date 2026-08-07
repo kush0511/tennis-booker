@@ -51,6 +51,11 @@ type Tab = "book" | "plans" | "history" | "system";
 type SystemHealth = {
   checkedAt: string;
   dooremiConfigured: boolean;
+  bookingCredential: {
+    status: "current" | "upgrade_required" | "unknown" | "missing";
+    issuedAt: string | null;
+    minimumIssuedAt: string | null;
+  };
   automationEnabled: boolean;
   wakeWindow: string;
   lastSeenAt: string | null;
@@ -977,9 +982,13 @@ export function TennisDashboard({
 
           <div className="health-stack">
             <SystemCheckCard
-              label="Dooremi secret"
-              value={systemHealth?.dooremiConfigured ?? tokenConfigured}
-              detail="Stored only in this Site’s hosted secret vault."
+              label="Booking credential"
+              value={
+                systemHealth
+                  ? systemHealth.bookingCredential.status === "current"
+                  : tokenConfigured
+              }
+              detail={bookingCredentialDetail(systemHealth, tokenConfigured)}
             />
             <SystemCheckCard
               label="External wake-up"
@@ -1024,8 +1033,8 @@ export function TennisDashboard({
             {checkingConnection ? "Checking Dooremi…" : "Check Dooremi connection"}
           </button>
           <p className="system-footnote">
-            This is the hosted equivalent of the TUI doctor: it checks the remote
-            service without reading or exposing your token, and never changes a booking.
+            This checks credential compatibility and the remote read connection
+            without exposing your token, and never changes a booking.
           </p>
         </section>
       </div>
@@ -1199,6 +1208,28 @@ function SystemCheckCard({
       </div>
     </article>
   );
+}
+
+function bookingCredentialDetail(
+  health: SystemHealth | null,
+  tokenConfigured: boolean,
+): string {
+  if (!health) {
+    return tokenConfigured
+      ? "Stored only in this Site’s hosted secret vault."
+      : "No hosted Dooremi token is configured.";
+  }
+  const credential = health.bookingCredential;
+  if (credential.status === "current" && credential.issuedAt) {
+    return `Current-app token issued ${formatDateTime(credential.issuedAt)} SGT.`;
+  }
+  if (credential.status === "upgrade_required" && credential.issuedAt) {
+    return `Legacy token issued ${formatDateTime(credential.issuedAt)} SGT. Sign in to the current Dooremi app and replace it before the next release.`;
+  }
+  if (credential.status === "unknown") {
+    return "Stored securely, but its issue date cannot be verified. The connection check validates reads only.";
+  }
+  return "No hosted Dooremi token is configured.";
 }
 
 function SettingsSheet({
