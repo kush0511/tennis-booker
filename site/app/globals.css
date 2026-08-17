@@ -1236,6 +1236,15 @@ button:disabled {
   margin: 4px 0 0;
 }
 
+.system-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.system-actions .secondary-button {
+  width: 100%;
+}
+
 .system-timing-card {
   background: var(--forest);
   border-radius: 16px;

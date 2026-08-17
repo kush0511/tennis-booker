@@ -28,8 +28,8 @@ to evolve in parallel.
 ## Safety model
 
 - The Dooremi Bearer token is stored in macOS Keychain.
-- Tokens are preserved byte-for-byte and requests use the current Dooremi
-  Android transport signature (`okhttp/4.9.2`).
+- Tokens are preserved byte-for-byte and requests use the current Dooremi iOS
+  transport signature captured from app version 14.
 - The token is never written to the repository, configuration, schedules, or
   logs.
 - A multi-session attempt follows Dooremi’s documented temporary workaround:

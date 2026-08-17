@@ -203,6 +203,10 @@ class APITests(unittest.TestCase):
         result = client._create_single_booking(schedule, "token")
         self.assertEqual(result["booking_order_id"], 101)
         self.assertEqual(
+            client._request.call_args.args[0],
+            "/user/booking/createOrderV3",
+        )
+        self.assertEqual(
             client._request.call_args.kwargs["body"]["bookingOrderFacilityList"],
             [{"facilityId": 9001, "eventTime": "07:00-08:00"}],
         )

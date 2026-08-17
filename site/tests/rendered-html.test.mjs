@@ -53,12 +53,13 @@ test("removes all starter preview infrastructure", async () => {
 });
 
 test("ships mobile viewport and server-only token boundaries", async () => {
-  const [layout, page, dashboard, api, healthRoute, eventRoute] = await Promise.all([
+  const [layout, page, dashboard, api, healthRoute, reloginRoute, eventRoute] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/tennis-dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/_server/api.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/system/health/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/system/relogin/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/schedules/[id]/events/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(layout, /width:\s*"device-width"/);
@@ -69,11 +70,15 @@ test("ships mobile viewport and server-only token boundaries", async () => {
   assert.match(dashboard, /Jump to day/);
   assert.match(dashboard, /Confirm action/);
   assert.match(dashboard, /System check/);
+  assert.match(dashboard, /Relogin and refresh credential/);
   assert.match(dashboard, /View run details/);
   assert.match(api, /DOOREMI_USERNAME/);
   assert.match(api, /DooremiSessionManager/);
   assert.doesNotMatch(api, /password:\s*["'`][^"'`]+/);
   assert.match(healthRoute, /getAutomationHeartbeat/);
+  assert.match(reloginRoute, /requireSameOrigin/);
+  assert.match(reloginRoute, /requireApiUser/);
+  assert.doesNotMatch(reloginRoute, /DOOREMI_PASSWORD|userName|password/);
   assert.doesNotMatch(healthRoute, /AUTOMATION_SECRET:\s*runtime/);
   assert.match(eventRoute, /requireApiUser/);
   assert.doesNotMatch(page, /Date\.now\(\)/);

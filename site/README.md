@@ -34,7 +34,9 @@ health metadata. The encryption key and login details remain hosted secrets.
 Court Signal renews the session every 12 hours, validates it every 30 minutes,
 and requires a session refreshed within five minutes before cancellation or a
 booking write. Refreshes use a D1 lease so concurrent release plans share one
-login. Failed background renewals use a bounded one-minute-to-one-hour backoff
+login. The protected System view also exposes a manual relogin control that
+forces a fresh server-side username/password exchange without sending either
+secret to the browser. Failed background renewals use a bounded one-minute-to-one-hour backoff
 so an outage or bad credential cannot hammer the provider; a release-bound
 write may make one explicit fresh attempt. Tokens issued before the current
 Dooremi app migration remain blocked

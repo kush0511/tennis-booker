@@ -57,6 +57,32 @@ export async function maintainDooremiSession(): Promise<DooremiSessionStatus> {
   return dooremiSessionManager().maintain();
 }
 
+export async function reloginDooremiSession(): Promise<{
+  elapsedMs: number;
+  serverDate: string | null;
+  status: DooremiSessionStatus;
+}> {
+  const manager = dooremiSessionManager();
+  try {
+    const client = await manager.client({
+      forceRefresh: true,
+      requireManagedRefresh: true,
+    });
+    client.assertBookingCredentialCurrent();
+    const result = await client.warmup();
+    return {
+      elapsedMs: result.elapsedMs,
+      serverDate: result.serverDate?.toISOString() ?? null,
+      status: await manager.status(),
+    };
+  } catch (error) {
+    throw new HttpError(
+      503,
+      safeErrorMessage(error) || "The app-managed Dooremi relogin failed.",
+    );
+  }
+}
+
 export async function dooremiSessionStatus(): Promise<DooremiSessionStatus> {
   return dooremiSessionManager().status();
 }

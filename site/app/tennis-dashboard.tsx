@@ -133,6 +133,7 @@ export function TennisDashboard({
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
   const [loadingSystem, setLoadingSystem] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
+  const [relogging, setRelogging] = useState(false);
   const bookingCredential =
     systemHealth?.bookingCredential ?? initialBookingCredential;
   const bookingReady = bookingCredential.status === "current";
@@ -468,6 +469,29 @@ export function TennisDashboard({
       setError(messageOf(caught));
     } finally {
       setCheckingConnection(false);
+    }
+  }
+
+  async function relogin() {
+    setRelogging(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api<{ elapsedMs: number; refreshedAt: string | null }>(
+        "/api/system/relogin",
+        { method: "POST" },
+      );
+      const refreshed = result.refreshedAt
+        ? ` at ${formatDateTime(result.refreshedAt)} SGT`
+        : "";
+      setNotice(
+        `Dooremi login refreshed${refreshed} and verified in ${result.elapsedMs} ms. No booking was changed.`,
+      );
+      await Promise.all([loadSystemHealth(), loadBookings(), loadAvailability(true)]);
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setRelogging(false);
     }
   }
 
@@ -1088,17 +1112,31 @@ export function TennisDashboard({
             </p>
           </section>
 
-          <button
-            className="primary-button wide"
-            type="button"
-            disabled={!tokenConfigured || checkingConnection}
-            onClick={() => void checkConnection()}
-          >
-            {checkingConnection ? "Checking Dooremi…" : "Check Dooremi connection"}
-          </button>
+          <div className="system-actions">
+            <button
+              className="primary-button wide"
+              type="button"
+              disabled={!tokenConfigured || checkingConnection || relogging}
+              onClick={() => void checkConnection()}
+            >
+              {checkingConnection ? "Checking Dooremi…" : "Check Dooremi connection"}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={
+                relogging ||
+                checkingConnection ||
+                systemHealth?.managedSession.autoRenewConfigured === false
+              }
+              onClick={() => void relogin()}
+            >
+              {relogging ? "Refreshing login…" : "Relogin and refresh credential"}
+            </button>
+          </div>
           <p className="system-footnote">
-            This checks credential compatibility and the remote read connection
-            without exposing your token, and never changes a booking.
+            These controls verify or replace the encrypted app-owned session
+            without exposing login details to the browser. They never change a booking.
           </p>
         </section>
       </div>

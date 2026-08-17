@@ -6,6 +6,7 @@ import {
   AmbiguousSubmissionError,
   AuthenticationError,
   ClientUpgradeRequiredError,
+  DOOREMI_ACCEPT_LANGUAGE,
   DOOREMI_IOS_USER_AGENT,
   DooremiClient,
   DooremiError,
@@ -73,7 +74,7 @@ test("background sign-in uses the current app contract without authorization hea
   });
   const headers = new Headers(requests[0].init?.headers);
   assert.equal(headers.get("authorization"), null);
-  assert.equal(headers.get("accept-language"), null);
+  assert.equal(headers.get("accept-language"), DOOREMI_ACCEPT_LANGUAGE);
   assert.equal(headers.get("user-agent"), DOOREMI_IOS_USER_AGENT);
 });
 
@@ -118,7 +119,7 @@ test("the server client sends the captured request shape without exposing its to
   assert.equal(requests[0].init?.body, "{}");
   const headers = new Headers(requests[0].init?.headers);
   assert.equal(headers.get("authorization"), "Bearer hosted-secret-value");
-  assert.equal(headers.get("accept-language"), null);
+  assert.equal(headers.get("accept-language"), DOOREMI_ACCEPT_LANGUAGE);
   assert.equal(headers.get("user-agent"), DOOREMI_IOS_USER_AGENT);
   assert.equal(headers.get("connection"), null);
   assert.equal(Object.keys(client).some((key) => /token/i.test(key)), false);
@@ -154,7 +155,7 @@ test("a booking mirrors the current app preview and management-payment flow", as
     fetch: async (input, init) => {
       const request = { url: new URL(String(input)), init: init ?? {} };
       requests.push(request);
-      if (request.url.pathname.endsWith("/orderPreview")) {
+      if (request.url.pathname.endsWith("/orderPreviewV2")) {
         return bookingPreviewResponse(2.5);
       }
       return jsonResponse({
@@ -173,7 +174,7 @@ test("a booking mirrors the current app preview and management-payment flow", as
   assert.equal(result.elapsedMs !== undefined, true);
   assert.deepEqual(
     requests.map((request) => request.url.pathname),
-    ["/user/booking/orderPreview", "/user/booking/createOrderV2"],
+    ["/user/booking/orderPreviewV2", "/user/booking/createOrderV3"],
   );
   assert.deepEqual(JSON.parse(String(requests[0].init.body)), {
     eventDay: "2026-07-17",
@@ -199,7 +200,7 @@ test("a successful preview is cached and fee-free bookings omit paymentType", as
       const path = new URL(String(input)).pathname;
       paths.push(path);
       bodies.push(JSON.parse(String(init?.body)));
-      return path.endsWith("/orderPreview")
+      return path.endsWith("/orderPreviewV2")
         ? bookingPreviewResponse(0)
         : jsonResponse({
             status: 0,
@@ -221,8 +222,8 @@ test("a successful preview is cached and fee-free bookings omit paymentType", as
   assert.equal(second.cached, true);
   assert.equal(result.bookingOrderId, 902);
   assert.deepEqual(paths, [
-    "/user/booking/orderPreview",
-    "/user/booking/createOrderV2",
+    "/user/booking/orderPreviewV2",
+    "/user/booking/createOrderV3",
   ]);
   assert.equal(Object.hasOwn(bodies[1] as object, "paymentType"), false);
 });

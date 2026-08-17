@@ -12,7 +12,9 @@ import {
 } from "./domain.js";
 
 export const DOOREMI_BASE_URL = "https://api.dooremi.com.sg";
-export const DOOREMI_CURRENT_USER_AGENT = "okhttp/4.9.2";
+export const DOOREMI_CURRENT_USER_AGENT =
+  "Dooremi/14 CFNetwork/3860.600.12 Darwin/25.5.0";
+export const DOOREMI_ACCEPT_LANGUAGE = "en-SG,en-GB;q=0.9,en;q=0.8";
 // Retained as a compatibility export for the shared contract and older imports.
 export const DOOREMI_IOS_USER_AGENT = DOOREMI_CURRENT_USER_AGENT;
 export const DOOREMI_CURRENT_APP_TOKEN_NOT_BEFORE =
@@ -22,8 +24,8 @@ export const DOOREMI_ENDPOINTS = Object.freeze({
   checkLogin: "/user/checkLogin",
   mobileSession: "/user/gvs/getSipInfoV2",
   availability: "/user/booking/facilitySlot",
-  preview: "/user/booking/orderPreview",
-  createBooking: "/user/booking/createOrderV2",
+  preview: "/user/booking/orderPreviewV2",
+  createBooking: "/user/booking/createOrderV3",
   bookingHistory: "/user/booking/history",
   bookingDetail: "/user/booking/detail",
   cancelBooking: "/user/booking/cancel",
@@ -164,7 +166,7 @@ export interface WarmupResult {
 export interface SingleBookingResult {
   message: string;
   bookingOrderId: number | null;
-  /** Provider round-trip for createOrderV2 only; preview latency is separate. */
+  /** Provider round-trip for createOrderV3 only; preview latency is separate. */
   elapsedMs?: number;
   serverDate?: Date | null;
 }
@@ -418,6 +420,7 @@ export async function loginDooremi(
           headers: {
             "Content-Type": "application/json",
             Accept: "application/json",
+            "Accept-Language": DOOREMI_ACCEPT_LANGUAGE,
             "User-Agent": options.userAgent ?? DOOREMI_CURRENT_USER_AGENT,
           },
           body: JSON.stringify({
@@ -611,7 +614,7 @@ export class DooremiClient {
   }
 
   /**
-   * Mirrors the current Dooremi app's required orderPreview -> createOrderV2
+   * Mirrors the current Dooremi app's required orderPreviewV2 -> createOrderV3
    * flow. This is read-only and caches the derived create payload so a safe
    * retry never repeats a successful preview or adds latency twice.
    */
@@ -828,6 +831,7 @@ export class DooremiClient {
           Authorization: `Bearer ${this.#token}`,
           "Content-Type": "application/json",
           Accept: "application/json",
+          "Accept-Language": DOOREMI_ACCEPT_LANGUAGE,
           "User-Agent": this.#userAgent,
         };
         if (cookieHeader) headers.Cookie = cookieHeader;

@@ -67,7 +67,7 @@ KEYCHAIN_SERVICE = "app.tennis-booker.local"
 KEYCHAIN_ACCOUNT = "dooremi-bearer"
 AGENT_LABEL = "app.tennis-booker.local"
 BASE_URL = "https://api.dooremi.com.sg"
-IOS_USER_AGENT = "okhttp/4.9.2"
+IOS_USER_AGENT = "Dooremi/14 CFNetwork/3860.600.12 Darwin/25.5.0"
 CURRENT_APP_TOKEN_NOT_BEFORE = dt.datetime(2026, 3, 1, tzinfo=SGT)
 
 
@@ -591,7 +591,7 @@ class DooremiClient:
         for target in schedule_booking_targets(schedule):
             single = single_target_schedule(schedule, target)
             payload, _, _ = self._request(
-                "/user/booking/orderPreview",
+                "/user/booking/orderPreviewV2",
                 token,
                 body=booking_payload(single),
             )
@@ -662,7 +662,7 @@ class DooremiClient:
                 "Each Dooremi booking request must contain exactly one session."
             )
         payload, _, _ = self._request(
-            "/user/booking/createOrderV2",
+            "/user/booking/createOrderV3",
             token,
             body=booking_payload(schedule),
         )
