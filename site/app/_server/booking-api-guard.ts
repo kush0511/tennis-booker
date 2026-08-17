@@ -13,6 +13,7 @@ import {
   BOOKING_API_GUARD_CHECK_LEASE_MILLISECONDS,
   parseDooremiAppVersion,
   parseDooremiAppVersionFromPage,
+  isCompatiblePreviewBusinessRejection,
   VERIFIED_DOOREMI_APP_VERSION,
 } from "@/lib/booking-guard";
 import { suggestedSessionDay } from "@/lib/domain";
@@ -139,12 +140,19 @@ export async function runBookingApiCompatibilityCheck(options: {
       );
       const slot = availability.slots.find((item) => item.available);
       if (!slot) continue;
-      await client.prepareSingleBooking({
-        eventDay,
-        eventTimes: [slot.eventTime],
-        facilityId,
-        facilityCategoryId,
-      });
+      try {
+        await client.prepareSingleBooking({
+          eventDay,
+          eventTimes: [slot.eventTime],
+          facilityId,
+          facilityCategoryId,
+        });
+      } catch (error) {
+        // The preview contract is demonstrably alive when it returns this
+        // known account-level rule. It says nothing about endpoint drift and
+        // must not turn a full account into a false API outage.
+        if (!isCompatiblePreviewBusinessRejection(error)) throw error;
+      }
       previewed = true;
     }
     if (!previewed) {

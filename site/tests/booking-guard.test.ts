@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   BOOKING_API_GUARD_MAX_AGE_MILLISECONDS,
   bookingGuardDecision,
+  canAutomationRecoverBookingGuard,
+  isCompatiblePreviewBusinessRejection,
   parseDooremiAppVersion,
   parseDooremiAppVersionFromPage,
 } from "../lib/booking-guard.js";
@@ -72,5 +74,25 @@ test("the App Store parser selects only the Dooremi app record", () => {
   assert.equal(
     parseDooremiAppVersionFromPage("<p>Version 1.7.0</p>"),
     "1.7.0",
+  );
+});
+
+test("the known provider booking-limit rejection proves preview compatibility", () => {
+  const rejection = {
+    code: "rejected",
+    message:
+      "Dooremi rejected the request (1): You have reached the booking limit according to House Rules",
+  };
+  assert.equal(isCompatiblePreviewBusinessRejection(rejection), true);
+  assert.equal(canAutomationRecoverBookingGuard({
+    failureCode: rejection.code,
+    failureMessage: rejection.message,
+  }), true);
+  assert.equal(
+    isCompatiblePreviewBusinessRejection({
+      code: "rejected",
+      message: "The booking endpoint returned an unfamiliar rule.",
+    }),
+    false,
   );
 });

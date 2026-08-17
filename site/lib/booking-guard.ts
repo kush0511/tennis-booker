@@ -18,6 +18,31 @@ export const VERIFIED_DOOREMI_APP_VERSION = contract.api.verifiedAppVersion;
 export const BOOKING_API_GUARD_MAX_AGE_MILLISECONDS = 8 * 60 * 60 * 1_000;
 export const BOOKING_API_GUARD_CHECK_LEASE_MILLISECONDS = 60_000;
 
+const PROVIDER_BOOKING_LIMIT_PATTERN =
+  /you have reached the booking limit according to house rules/i;
+
+export function isCompatiblePreviewBusinessRejection(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "rejected" &&
+    typeof candidate.message === "string" &&
+    PROVIDER_BOOKING_LIMIT_PATTERN.test(candidate.message)
+  );
+}
+
+export function canAutomationRecoverBookingGuard(
+  guard: Pick<BookingApiGuardState, "failureCode" | "failureMessage"> | null,
+): boolean {
+  return (
+    guard?.failureCode === "app_version_lookup_failed" ||
+    isCompatiblePreviewBusinessRejection({
+      code: guard?.failureCode,
+      message: guard?.failureMessage,
+    })
+  );
+}
+
 export type BookingGuardDecision = {
   enabled: boolean;
   reason: "healthy" | "missing" | "disabled" | "stale";

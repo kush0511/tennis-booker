@@ -100,7 +100,9 @@ create or cancellation. Provider/app contract failures do not silently unlock;
 the owner must validate and re-enable writes from the System view after the
 current HAR-backed contract has been reviewed. A transient Apple metadata
 transport failure can recover only after every provider read/preview check also
-passes.
+passes. The provider's exact account-level booking-limit response counts as a
+compatible read-only preview response; unknown preview rejections still freeze
+writes.
 Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
 connected.
 
