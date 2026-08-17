@@ -9,8 +9,10 @@ import {
 } from "@/db/repository";
 import {
   appStoreLookupUrl,
+  appStorePageUrl,
   BOOKING_API_GUARD_CHECK_LEASE_MILLISECONDS,
   parseDooremiAppVersion,
+  parseDooremiAppVersionFromPage,
   VERIFIED_DOOREMI_APP_VERSION,
 } from "@/lib/booking-guard";
 import { suggestedSessionDay } from "@/lib/domain";
@@ -26,6 +28,39 @@ class CompatibilityCheckError extends Error {
     this.name = "CompatibilityCheckError";
     this.code = code;
   }
+}
+
+const APP_STORE_HEADERS = Object.freeze({
+  Accept: "application/json, text/html;q=0.9",
+  "Accept-Language": "en-SG,en;q=0.9",
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 CourtSignal/1.0",
+});
+
+async function currentDooremiAppVersion(
+  fetchImpl: typeof globalThis.fetch,
+): Promise<string> {
+  const lookup = await fetchImpl(appStoreLookupUrl(), {
+    headers: APP_STORE_HEADERS,
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (lookup.ok) {
+    return parseDooremiAppVersion(await lookup.json());
+  }
+
+  const page = await fetchImpl(appStorePageUrl(), {
+    headers: APP_STORE_HEADERS,
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!page.ok) {
+    throw new CompatibilityCheckError(
+      "app_version_lookup_failed",
+      `Apple app-version checks returned HTTP ${lookup.status} and ${page.status}.`,
+    );
+  }
+  return parseDooremiAppVersionFromPage(await page.text());
 }
 
 function failureCode(error: unknown): string {
@@ -56,22 +91,8 @@ export async function runBookingApiCompatibilityCheck(options: {
 
   let observedAppVersion: string | null = null;
   try {
-    const appStoreResponse = await (options.fetch ?? globalThis.fetch)(
-      appStoreLookupUrl(),
-      {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (!appStoreResponse.ok) {
-      throw new CompatibilityCheckError(
-        "app_version_lookup_failed",
-        `Apple app-version lookup returned HTTP ${appStoreResponse.status}.`,
-      );
-    }
-    observedAppVersion = parseDooremiAppVersion(
-      await appStoreResponse.json(),
+    observedAppVersion = await currentDooremiAppVersion(
+      options.fetch ?? globalThis.fetch,
     );
     if (observedAppVersion !== VERIFIED_DOOREMI_APP_VERSION) {
       throw new CompatibilityCheckError(

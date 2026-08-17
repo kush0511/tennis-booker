@@ -68,6 +68,10 @@ export function appStoreLookupUrl(): string {
   return `https://itunes.apple.com/lookup?id=${DOOREMI_APP_STORE_ID}&country=sg`;
 }
 
+export function appStorePageUrl(): string {
+  return `https://apps.apple.com/sg/app/dooremi/id${DOOREMI_APP_STORE_ID}`;
+}
+
 export function parseDooremiAppVersion(payload: unknown): string {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Apple returned an invalid app-version response.");
@@ -87,4 +91,12 @@ export function parseDooremiAppVersion(payload: unknown): string {
     throw new Error("Apple did not identify the current Dooremi app version.");
   }
   return app.version.trim();
+}
+
+export function parseDooremiAppVersionFromPage(html: string): string {
+  const match = /\bVersion\s+(\d+(?:\.\d+){1,3})\b/i.exec(html);
+  if (!match) {
+    throw new Error("Apple's App Store page did not identify the current version.");
+  }
+  return match[1];
 }

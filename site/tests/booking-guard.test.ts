@@ -5,6 +5,7 @@ import {
   BOOKING_API_GUARD_MAX_AGE_MILLISECONDS,
   bookingGuardDecision,
   parseDooremiAppVersion,
+  parseDooremiAppVersionFromPage,
 } from "../lib/booking-guard.js";
 import type { BookingApiGuardState } from "../lib/booking-guard.js";
 
@@ -68,4 +69,8 @@ test("the App Store parser selects only the Dooremi app record", () => {
     "1.7.0",
   );
   assert.throws(() => parseDooremiAppVersion({ results: [] }));
+  assert.equal(
+    parseDooremiAppVersionFromPage("<p>Version 1.7.0</p>"),
+    "1.7.0",
+  );
 });
