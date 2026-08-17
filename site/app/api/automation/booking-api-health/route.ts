@@ -5,6 +5,7 @@ import {
 } from "@/app/_server/api";
 import { runBookingApiCompatibilityCheck } from "@/app/_server/booking-api-guard";
 import { getRuntimeEnv } from "@/db";
+import { getBookingApiGuard } from "@/db/repository";
 import { bookingGuardDecision } from "@/lib/booking-guard";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,15 @@ export async function POST(request: Request) {
       throw new HttpError(401, "Automation authorization failed.");
     }
 
-    const guard = await runBookingApiCompatibilityCheck();
+    const previous = await getBookingApiGuard();
+    const guard = await runBookingApiCompatibilityCheck({
+      // A temporary Apple metadata transport failure is not evidence that the
+      // Dooremi contract changed. It may recover only after the complete
+      // provider read/preview check succeeds. Actual provider/app drift stays
+      // latched until the owner validates the updated HAR-backed contract.
+      reenableOnSuccess:
+        previous?.failureCode === "app_version_lookup_failed",
+    });
     const decision = bookingGuardDecision(guard);
     if (!decision.enabled) {
       console.error(

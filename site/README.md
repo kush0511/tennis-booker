@@ -96,9 +96,11 @@ The protected `POST /api/automation/booking-api-health` endpoint also compares
 the current App Store version with the HAR-verified contract and exercises the
 read-only login, history, availability, and preview flow. A new app version,
 failed API, or stale check latches a durable safety lock before any provider
-create or cancellation. Successful scheduled checks do not silently unlock it;
+create or cancellation. Provider/app contract failures do not silently unlock;
 the owner must validate and re-enable writes from the System view after the
-current HAR-backed contract has been reviewed.
+current HAR-backed contract has been reviewed. A transient Apple metadata
+transport failure can recover only after every provider read/preview check also
+passes.
 Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
 connected.
 
