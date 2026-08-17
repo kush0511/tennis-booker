@@ -50,6 +50,7 @@ type DashboardProps = {
   initialDay: string;
   tokenConfigured: boolean;
   initialBookingCredential: BookingCredential;
+  initialBookingApiGuard: BookingApiGuardHealth;
   automationReady: boolean;
 };
 
@@ -68,11 +69,25 @@ type ManagedSessionHealth = {
   needsAttention: boolean;
 };
 
+type BookingApiGuardHealth = {
+  status: "unknown" | "healthy" | "disabled";
+  bookingsEnabled: boolean;
+  expectedAppVersion: string;
+  observedAppVersion: string | null;
+  checkedAt: string | null;
+  lastHealthyAt: string | null;
+  disabledAt: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  message: string;
+};
+
 type SystemHealth = {
   checkedAt: string;
   dooremiConfigured: boolean;
   bookingCredential: BookingCredential;
   managedSession: ManagedSessionHealth;
+  bookingApiGuard: BookingApiGuardHealth;
   automationEnabled: boolean;
   wakeWindow: string;
   lastSeenAt: string | null;
@@ -110,6 +125,7 @@ export function TennisDashboard({
   initialDay,
   tokenConfigured,
   initialBookingCredential,
+  initialBookingApiGuard,
   automationReady,
 }: DashboardProps) {
   const [tab, setTab] = useState<Tab>("book");
@@ -134,10 +150,16 @@ export function TennisDashboard({
   const [loadingSystem, setLoadingSystem] = useState(false);
   const [checkingConnection, setCheckingConnection] = useState(false);
   const [relogging, setRelogging] = useState(false);
+  const [validatingBookingApis, setValidatingBookingApis] = useState(false);
   const bookingCredential =
     systemHealth?.bookingCredential ?? initialBookingCredential;
-  const bookingReady = bookingCredential.status === "current";
-  const bookingBlocked = bookingCredential.status === "upgrade_required";
+  const credentialReady = bookingCredential.status === "current";
+  const bookingGuard = systemHealth?.bookingApiGuard ?? initialBookingApiGuard;
+  const guardEnabled = bookingGuard?.bookingsEnabled === true;
+  const bookingReady = credentialReady && guardEnabled;
+  const bookingBlocked =
+    bookingCredential.status === "upgrade_required" ||
+    bookingGuard?.bookingsEnabled === false;
   const bookingAutomationReady = automationReady && bookingReady;
   const availabilityCache = useRef(
     new Map<string, { data: Availability; fetchedAt: number }>(),
@@ -495,6 +517,27 @@ export function TennisDashboard({
     }
   }
 
+  async function validateAndEnableBookingApis() {
+    setValidatingBookingApis(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api<BookingApiGuardHealth>(
+        "/api/system/booking-guard",
+        { method: "POST" },
+      );
+      setNotice(
+        `Booking APIs verified against Dooremi ${result.observedAppVersion || result.expectedAppVersion}. Booking and cancellation writes are enabled.`,
+      );
+      await Promise.all([loadSystemHealth(), loadBookings(), loadAvailability(true)]);
+    } catch (caught) {
+      setError(messageOf(caught));
+      await loadSystemHealth();
+    } finally {
+      setValidatingBookingApis(false);
+    }
+  }
+
   async function confirmPendingAction() {
     if (!pendingAction) return;
     const action = pendingAction;
@@ -581,7 +624,7 @@ export function TennisDashboard({
             </button>
           </nav>
           <span className={`connection-pill ${bookingReady ? "is-live" : ""}`}>
-            <span /> {bookingReadinessLabel(bookingCredential)}
+            <span /> {guardEnabled ? bookingReadinessLabel(bookingCredential) : "Safety lock"}
           </span>
           <button
             className="avatar-button"
@@ -603,7 +646,9 @@ export function TennisDashboard({
             <div className="hero-copy">
               <p className="eyebrow">
                 {bookingBlocked
-                  ? "Background sign-in needs attention"
+                  ? guardEnabled
+                    ? "Background sign-in needs attention"
+                    : "Booking API safety lock"
                   : release === null
                   ? "Court clock"
                   : releaseOpen
@@ -678,11 +723,15 @@ export function TennisDashboard({
           {bookingBlocked ? (
             <div className="setup-banner" role="alert">
               <div>
-                <strong>Automatic Dooremi sign-in needs attention</strong>
+                <strong>
+                  {guardEnabled
+                    ? "Automatic Dooremi sign-in needs attention"
+                    : "All booking writes are frozen"}
+                </strong>
                 <p>
-                  Court Signal could not replace the legacy session. It will retry
-                  in the background and will stop before cancellation until a
-                  current session is verified.
+                  {guardEnabled
+                    ? "Court Signal could not replace the legacy session. It will retry in the background and will stop before cancellation until a current session is verified."
+                    : bookingGuard?.failureMessage || "The daily booking API check has not passed. Existing bookings cannot be cancelled while the safety lock is active."}
                 </p>
               </div>
               <button type="button" onClick={() => setTab("system")}>
@@ -895,7 +944,7 @@ export function TennisDashboard({
                           className="run-plan-button"
                           type="button"
                           onClick={() => setPendingAction({ kind: "run", schedule })}
-                          disabled={submitting || !tokenConfigured}
+                          disabled={submitting || !bookingReady}
                         >
                           Run release
                         </button>
@@ -1029,7 +1078,7 @@ export function TennisDashboard({
                     onClick={() =>
                       setPendingAction({ kind: "cancel-booking", booking })
                     }
-                    disabled={submitting}
+                    disabled={submitting || !bookingReady}
                   >
                     Cancel
                   </button>
@@ -1075,8 +1124,13 @@ export function TennisDashboard({
             />
             <SystemCheckCard
               label="Booking credential"
-              value={bookingReady}
+              value={credentialReady}
               detail={bookingCredentialDetail(bookingCredential)}
+            />
+            <SystemCheckCard
+              label="Booking API safety guard"
+              value={guardEnabled}
+              detail={bookingGuardDetail(bookingGuard)}
             />
             <SystemCheckCard
               label="External wake-up"
@@ -1133,10 +1187,26 @@ export function TennisDashboard({
             >
               {relogging ? "Refreshing login…" : "Relogin and refresh credential"}
             </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={
+                validatingBookingApis ||
+                relogging ||
+                checkingConnection ||
+                !tokenConfigured
+              }
+              onClick={() => void validateAndEnableBookingApis()}
+            >
+              {validatingBookingApis
+                ? "Validating booking APIs…"
+                : "Validate and enable booking APIs"}
+            </button>
           </div>
           <p className="system-footnote">
             These controls verify or replace the encrypted app-owned session
-            without exposing login details to the browser. They never change a booking.
+            without exposing login details to the browser. Validation is read-only;
+            it never creates or cancels a booking.
           </p>
         </section>
       </div>
@@ -1354,6 +1424,20 @@ function managedSessionDetail(session: ManagedSessionHealth | undefined): string
   return `Court Signal owns sign-in and renews the encrypted session automatically.${refreshed}${identity}`;
 }
 
+function bookingGuardDetail(guard: BookingApiGuardHealth | undefined): string {
+  if (!guard) return "Loading the durable booking API safety state…";
+  if (!guard.bookingsEnabled) {
+    const version = guard.observedAppVersion
+      ? ` Observed Dooremi ${guard.observedAppVersion}; verified contract ${guard.expectedAppVersion}.`
+      : "";
+    return `${guard.failureMessage || guard.message}${version}`;
+  }
+  const checked = guard.checkedAt
+    ? ` Last verified ${formatDateTime(guard.checkedAt)} SGT.`
+    : "";
+  return `Login, history, availability, preview, and Dooremi ${guard.expectedAppVersion} match the verified contract.${checked}`;
+}
+
 function SettingsSheet({
   settings,
   email,
@@ -1425,7 +1509,7 @@ function SettingsSheet({
             label="Max sessions"
             value={draft.maximumSessions}
             min={1}
-            max={6}
+            max={10}
             onChange={(maximumSessions) => setDraft({ ...draft, maximumSessions })}
           />
         </div>

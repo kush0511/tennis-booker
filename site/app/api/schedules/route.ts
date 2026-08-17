@@ -5,6 +5,7 @@ import {
   HttpError,
   readJsonObject,
   requireApiUser,
+  requireBookingMutationsEnabled,
   requireSameOrigin,
   routeError,
 } from "@/app/_server/api";
@@ -17,6 +18,7 @@ import {
 export async function GET() {
   try {
     const user = await requireApiUser();
+    await requireBookingMutationsEnabled();
     return data(await listSchedules(user.email));
   } catch (error) {
     return routeError(error);

@@ -3,6 +3,7 @@ import {
   data,
   HttpError,
   requireApiUser,
+  requireBookingMutationsEnabled,
   requireSameOrigin,
   routeError,
 } from "@/app/_server/api";
@@ -15,6 +16,7 @@ export async function POST(
   try {
     requireSameOrigin(request);
     const user = await requireApiUser();
+    await requireBookingMutationsEnabled();
     const id = (await context.params).id;
     const owned = await getSchedule(id, user.email);
     if (!owned) throw new HttpError(404, "That schedule was not found.");

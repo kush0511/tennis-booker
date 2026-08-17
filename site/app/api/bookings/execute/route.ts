@@ -5,6 +5,7 @@ import {
   HttpError,
   readJsonObject,
   requireApiUser,
+  requireBookingMutationsEnabled,
   requireSameOrigin,
   routeError,
 } from "@/app/_server/api";
@@ -19,6 +20,7 @@ export async function POST(request: Request) {
   try {
     requireSameOrigin(request);
     const user = await requireApiUser();
+    await requireBookingMutationsEnabled();
     const settings = await getSettings(user.email);
     if (!settings.facilityId || !settings.facilityCategoryId) {
       throw new HttpError(409, "Add your facility and category IDs first.");

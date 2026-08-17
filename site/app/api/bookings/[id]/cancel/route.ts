@@ -3,6 +3,7 @@ import {
   dooremiClient,
   HttpError,
   positiveInteger,
+  requireBookingMutationsEnabled,
   requireApiUser,
   requireSameOrigin,
   routeError,
@@ -16,6 +17,7 @@ export async function POST(
   try {
     requireSameOrigin(request);
     await requireApiUser();
+    await requireBookingMutationsEnabled();
     const id = positiveInteger((await context.params).id, "Booking ID");
     const client = await dooremiClient({
       freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,

@@ -9,6 +9,7 @@ import {
 } from "@/db/repository";
 import {
   data,
+  bookingMutationStatus,
   HttpError,
   maintainDooremiSession,
   routeError,
@@ -76,7 +77,10 @@ export async function POST(request: Request) {
       return null;
     });
     await exportUnreportedFailures();
-    const due = await listDueSchedules(now, HOSTED_ARMING_WINDOW_SECONDS);
+    const bookingGuard = await bookingMutationStatus();
+    const due = bookingGuard.decision.enabled
+      ? await listDueSchedules(now, HOSTED_ARMING_WINDOW_SECONDS)
+      : [];
     // Every plan for the same release boundary must arm independently. A
     // sequential loop lets the first user sleep until release while every later
     // user misses the synchronized submission window.
@@ -115,6 +119,12 @@ export async function POST(request: Request) {
             needsAttention: credentialHealth.needsAttention,
           }
         : { needsAttention: true },
+      bookingGuard: {
+        status: bookingGuard.guard.status,
+        bookingsEnabled: bookingGuard.decision.enabled,
+        checkedAt: bookingGuard.guard.checkedAt,
+        failureCode: bookingGuard.guard.failureCode,
+      },
       schedules: results,
     });
   } catch (error) {

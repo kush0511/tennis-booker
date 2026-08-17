@@ -1,6 +1,16 @@
 import { getChatGPTUser, type ChatGPTUser } from "@/app/chatgpt-auth";
 import { getRuntimeEnv } from "@/db";
-import { providerCredentialStore } from "@/db/repository";
+import {
+  getBookingApiGuard,
+  providerCredentialStore,
+  recordBookingApiGuardFailure,
+  type BookingApiGuard,
+} from "@/db/repository";
+import {
+  bookingGuardDecision,
+  VERIFIED_DOOREMI_APP_VERSION,
+  type BookingGuardDecision,
+} from "@/lib/booking-guard";
 import { safeErrorMessage } from "@/lib/dooremi";
 import {
   DooremiSessionManager,
@@ -85,6 +95,55 @@ export async function reloginDooremiSession(): Promise<{
 
 export async function dooremiSessionStatus(): Promise<DooremiSessionStatus> {
   return dooremiSessionManager().status();
+}
+
+export async function bookingMutationStatus(): Promise<{
+  guard: BookingApiGuard;
+  decision: BookingGuardDecision;
+}> {
+  let guard = await getBookingApiGuard();
+  let decision = bookingGuardDecision(guard);
+  if (!guard) {
+    const updatedAt = new Date().toISOString();
+    return {
+      guard: {
+        status: "unknown",
+        bookingsEnabled: false,
+        expectedAppVersion: VERIFIED_DOOREMI_APP_VERSION,
+        observedAppVersion: null,
+        checkedAt: null,
+        lastHealthyAt: null,
+        disabledAt: null,
+        failureCode: "guard_not_initialized",
+        failureMessage: decision.message,
+        updatedAt,
+      },
+      decision,
+    };
+  }
+  if (decision.reason === "stale") {
+    const checkedAt = new Date().toISOString();
+    guard = await recordBookingApiGuardFailure({
+      checkedAt,
+      expectedAppVersion: guard.expectedAppVersion,
+      observedAppVersion: guard.observedAppVersion,
+      code: "guard_stale",
+      message: decision.message,
+    });
+    decision = bookingGuardDecision(guard);
+  }
+  return { guard, decision };
+}
+
+export async function requireBookingMutationsEnabled(): Promise<BookingApiGuard> {
+  const { guard, decision } = await bookingMutationStatus();
+  if (!decision.enabled) {
+    throw new HttpError(
+      503,
+      `${decision.message} Existing bookings were not changed.`,
+    );
+  }
+  return guard;
 }
 
 export async function readJsonObject(

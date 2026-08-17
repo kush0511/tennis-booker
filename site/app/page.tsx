@@ -50,16 +50,17 @@ export default async function Home() {
     { getRuntimeEnv },
     { getSettings, listSchedules },
     { externalWakeCoversRelease },
-    { maintainDooremiSession },
+    { maintainDooremiSession, bookingMutationStatus },
   ] = await Promise.all([
     import("@/db"),
     import("@/db/repository"),
     import("@/lib/automation"),
     import("@/app/_server/api"),
   ]);
-  const [settings, schedules] = await Promise.all([
+  const [settings, schedules, bookingGuard] = await Promise.all([
     getSettings(user.email),
     listSchedules(user.email),
+    bookingMutationStatus(),
   ]);
   const { currentSuggestedSessionDay } = await import("@/lib/domain");
   const session = await maintainDooremiSession();
@@ -82,6 +83,18 @@ export default async function Home() {
       initialDay={currentSuggestedSessionDay(settings.bookingLeadDays)}
       tokenConfigured={tokenConfigured}
       initialBookingCredential={initialBookingCredential}
+      initialBookingApiGuard={{
+        status: bookingGuard.guard.status,
+        bookingsEnabled: bookingGuard.decision.enabled,
+        expectedAppVersion: bookingGuard.guard.expectedAppVersion,
+        observedAppVersion: bookingGuard.guard.observedAppVersion,
+        checkedAt: bookingGuard.guard.checkedAt,
+        lastHealthyAt: bookingGuard.guard.lastHealthyAt,
+        disabledAt: bookingGuard.guard.disabledAt,
+        failureCode: bookingGuard.guard.failureCode,
+        failureMessage: bookingGuard.guard.failureMessage,
+        message: bookingGuard.decision.message,
+      }}
       automationReady={automationReady}
     />
   );

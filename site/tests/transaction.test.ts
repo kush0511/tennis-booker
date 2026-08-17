@@ -53,7 +53,7 @@ test("the shared rebooking fixture merges and normalizes all preserved targets",
   assert.deepEqual(prepared.bookingTargets, rebookingFixture.expectedTargets);
 });
 
-test("the six-session limit is checked before cancellation", async () => {
+test("the ten-session limit is checked before cancellation", async () => {
   let cancelCalls = 0;
   const client: BookingTransactionClient = {
     warmup: async () => ({ elapsedMs: 1, serverDate: null }),
@@ -83,6 +83,10 @@ test("the six-session limit is checked before cancellation", async () => {
             "09:00-10:00",
             "10:00-11:00",
             "11:00-12:00",
+            "12:00-13:00",
+            "13:00-14:00",
+            "14:00-15:00",
+            "15:00-16:00",
           ]),
         ],
         sleep: noSleep,
@@ -91,6 +95,39 @@ test("the six-session limit is checked before cancellation", async () => {
     /Nothing was cancelled/,
   );
   assert.equal(cancelCalls, 0);
+});
+
+test("a latched API guard stops before history or cancellation", async () => {
+  const calls: string[] = [];
+  const client: BookingTransactionClient = {
+    warmup: async () => ({ elapsedMs: 1, serverDate: null }),
+    bookingHistory: async () => {
+      calls.push("history");
+      return [confirmedBooking(1)];
+    },
+    cancelBooking: async () => {
+      calls.push("cancel");
+      return { message: "cancelled", bookingId: 1 };
+    },
+    createSingleBooking: async () => ({ message: "ok", bookingOrderId: 2 }),
+  };
+  await assert.rejects(
+    executeBookingTransaction(
+      client,
+      {
+        eventDay: "2026-07-18",
+        eventTimes: ["19:00-20:00"],
+        facilityId: 9001,
+      },
+      {
+        assertMutationsEnabled: async () => {
+          throw new Error("booking API safety lock");
+        },
+      },
+    ),
+    /safety lock/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 test("credential incompatibility stops before history, warmup, cancellation, or submission", async () => {

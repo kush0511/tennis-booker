@@ -376,6 +376,8 @@ export interface ExecuteBookingTransactionOptions {
   sleep?: Sleep;
   monotonicNow?: () => number;
   onTiming?: (message: string) => void;
+  /** A durable fail-safe checked immediately before provider mutations. */
+  assertMutationsEnabled?: () => Promise<void>;
 }
 
 export interface BookingTransactionResult {
@@ -1024,6 +1026,7 @@ export async function executeBookingTransaction(
       },
     );
   }
+  await options.assertMutationsEnabled?.();
   client.assertBookingCredentialCurrent?.();
   const history =
     options.activeBookings ??
@@ -1069,6 +1072,7 @@ export async function executeBookingTransaction(
       }
     }
   }
+  await options.assertMutationsEnabled?.();
   const cancelledBookingIds = active.length
     ? await cancelActiveTennisBookings(client, active, {
         sleep,
@@ -1168,6 +1172,8 @@ export async function executeBookingTransaction(
   if (fireAt) {
     await sleepUntil(fireAt, now, sleep);
   }
+
+  await options.assertMutationsEnabled?.();
 
   const monotonicNow = options.monotonicNow ?? defaultMonotonicNow;
   const outcomes = await Promise.all(

@@ -53,7 +53,7 @@ export async function PUT(request: Request) {
       maximumSessions: positiveInteger(
         value.maximumSessions,
         "Maximum sessions",
-        { min: 1, max: 6 },
+        { min: 1, max: 10 },
       ),
     };
     return data(await saveSettings(user.email, settings));

@@ -22,8 +22,8 @@ class DateTests(unittest.TestCase):
         with self.assertRaises(tb.InputError):
             tb.validate_event_time("17:00-16:00")
 
-    def test_default_transaction_limit_is_six(self):
-        self.assertEqual(tb.Config().max_sessions_per_booking, 6)
+    def test_default_transaction_limit_is_ten(self):
+        self.assertEqual(tb.Config().max_sessions_per_booking, 10)
 
     def test_default_cancellation_lead_is_fifteen_seconds(self):
         self.assertEqual(tb.Config().cancellation_lead_seconds, 15)
@@ -275,7 +275,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(first.calls, 1)
         self.assertEqual(second.calls, 1)
 
-    def test_six_cross_date_targets_are_submitted_together(self):
+    def test_ten_cross_date_targets_are_submitted_together(self):
         calls = []
         calls_lock = tb.threading.Lock()
 
@@ -293,13 +293,13 @@ class APITests(unittest.TestCase):
 
         targets = [
             {
-                "event_day": "2026-07-17" if index < 3 else "2026-07-18",
+                "event_day": "2026-07-17" if index < 5 else "2026-07-18",
                 "event_time": "{:02d}:00-{:02d}:00".format(
                     7 + index, 8 + index
                 ),
                 "facility_id": 9001,
             }
-            for index in range(6)
+            for index in range(10)
         ]
         schedule = {
             "event_day": "2026-07-18",
@@ -311,14 +311,14 @@ class APITests(unittest.TestCase):
         result = tb.submit_booking_requests(
             schedule,
             "token",
-            [FakeClient(index) for index in range(6)],
+            [FakeClient(index) for index in range(10)],
         )
         self.assertCountEqual(calls, [
             (target["event_day"], target["event_time"]) for target in targets
         ])
-        self.assertEqual(result["booking_order_ids"], list(range(6)))
+        self.assertEqual(result["booking_order_ids"], list(range(10)))
 
-    def test_active_tennis_sessions_merge_before_six_slot_limit(self):
+    def test_active_tennis_sessions_merge_before_configured_slot_limit(self):
         active = [
             {
                 "id": 100,
@@ -359,6 +359,10 @@ class APITests(unittest.TestCase):
                     "09:00-10:00",
                     "10:00-11:00",
                     "11:00-12:00",
+                    "12:00-13:00",
+                    "13:00-14:00",
+                    "14:00-15:00",
+                    "15:00-16:00",
                 ],
                 "status_name": "Confirmed",
             }

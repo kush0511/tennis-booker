@@ -1,4 +1,4 @@
-export const MAX_BOOKING_TARGETS = 6;
+export const MAX_BOOKING_TARGETS = 10;
 export const SINGAPORE_UTC_OFFSET_HOURS = 8;
 
 export class DomainError extends Error {

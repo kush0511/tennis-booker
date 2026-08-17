@@ -19,7 +19,7 @@ class Config:
     grace_period_seconds: int = 300
     cancellation_lead_seconds: int = 15
     fire_delay_milliseconds: int = 10
-    max_sessions_per_booking: int = 6
+    max_sessions_per_booking: int = 10
 
     @classmethod
     def from_dict(cls, value):

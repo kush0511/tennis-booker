@@ -19,7 +19,7 @@ export const userSettings = sqliteTable("user_settings", {
   fireDelayMilliseconds: integer("fire_delay_milliseconds")
     .notNull()
     .default(10),
-  maximumSessions: integer("maximum_sessions").notNull().default(6),
+  maximumSessions: integer("maximum_sessions").notNull().default(10),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -130,5 +130,20 @@ export const providerCredentials = sqliteTable("provider_credentials", {
   lastErrorMessage: text("last_error_message"),
   refreshLeaseUntil: text("refresh_lease_until"),
   loginIdentifierKind: text("login_identifier_kind"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const bookingApiGuard = sqliteTable("booking_api_guard", {
+  id: text("id").primaryKey(),
+  status: text("status").notNull().default("unknown"),
+  bookingsEnabled: integer("bookings_enabled").notNull().default(0),
+  expectedAppVersion: text("expected_app_version").notNull(),
+  observedAppVersion: text("observed_app_version"),
+  checkedAt: text("checked_at"),
+  lastHealthyAt: text("last_healthy_at"),
+  disabledAt: text("disabled_at"),
+  failureCode: text("failure_code"),
+  failureMessage: text("failure_message"),
+  checkLeaseUntil: text("check_lease_until"),
   updatedAt: text("updated_at").notNull(),
 });

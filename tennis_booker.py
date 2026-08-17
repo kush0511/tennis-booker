@@ -739,8 +739,8 @@ def booking_clients(schedule, primary_client=None):
     targets = schedule_booking_targets(schedule)
     if not targets:
         raise InputError("Choose at least one session.")
-    if len(targets) > 6:
-        raise InputError("Choose at most six sessions per booking attempt.")
+    if len(targets) > 10:
+        raise InputError("Choose at most ten sessions per booking attempt.")
     primary_client = primary_client or DooremiClient()
     return [primary_client] + [
         DooremiClient(timeout=primary_client.timeout)
@@ -843,7 +843,7 @@ def prepare_rebooking_batch(
     schedule,
     token,
     client,
-    max_sessions=6,
+    max_sessions=10,
     active_bookings=None,
 ):
     active_bookings = (
@@ -1895,8 +1895,8 @@ class CLI:
             raise InputError("Release hour must be between 0 and 23.")
         if key == "release-minute" and not 0 <= value <= 59:
             raise InputError("Release minute must be between 0 and 59.")
-        if key == "max-sessions" and not 1 <= value <= 6:
-            raise InputError("Maximum sessions must be between 1 and 6.")
+        if key == "max-sessions" and not 1 <= value <= 10:
+            raise InputError("Maximum sessions must be between 1 and 10.")
         if value < 0:
             raise InputError("Configuration values cannot be negative.")
         setattr(config, fields[key], value)
@@ -2049,7 +2049,7 @@ class CLI:
             "  /setup [HAR_PATH]          First-time Keychain, agent, and session setup\n"
             "  /availability [DATE]       Show live sessions and select one\n"
             "  /book [DATE]               Friendly alias for availability\n"
-            "  /schedule DATE TIME [...]  Schedule up to six sessions\n"
+            "  /schedule DATE TIME [...]  Schedule up to ten sessions\n"
             "  /bookings                  Show recent Dooremi bookings\n"
             "  /cancel-booking ID         Cancel a confirmed Dooremi booking\n"
             "  /list                      Show scheduled and completed attempts\n"

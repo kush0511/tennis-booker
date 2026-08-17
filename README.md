@@ -1,7 +1,7 @@
 # Tennis Booker
 
 A local-first macOS terminal application for checking Dooremi tennis-court
-availability and scheduling up to six sessions at the facility release time.
+availability and scheduling up to ten sessions at the facility release time.
 The default interface is a responsive full-screen TUI built for keyboard and
 mouse use. The repository also contains **Court Signal**, a parallel,
 mobile-first ChatGPT Sites implementation.
@@ -33,15 +33,19 @@ to evolve in parallel.
 - The token is never written to the repository, configuration, schedules, or
   logs.
 - A multi-session attempt follows Dooremi’s documented temporary workaround:
-  one single-slot POST per session, released together over up to six HTTPS
+  one single-slot POST per session, released together over up to ten HTTPS
   connections.
 - The executor pre-warms one connection per selected session, then submits just
   after the opening boundary. It never retries an ambiguous request.
 - Before any immediate or scheduled transaction, active tennis bookings are
   cancelled, verified, and added to the synchronized replacement batch.
   Non-tennis bookings are never touched.
-- If the combined active and selected sessions exceed six, the operation stops
+- If the combined active and selected sessions exceed ten, the operation stops
   before cancelling anything.
+- The hosted app maintains a durable booking API guard. A changed Dooremi app
+  version, failed read-only contract probe, or stale health check freezes every
+  booking and provider-cancellation write before an existing reservation can
+  be changed. Only an owner validation can clear the latched safety lock.
 - Booking dates, times, results, and sanitized errors are stored under
   `~/Library/Application Support/TennisBooker`.
 - Runner logs live under `~/Library/Logs/TennisBooker`.
@@ -110,7 +114,7 @@ Tennis Court · 2026-07-17
    1  16:00-17:00  available
    –  17:00-18:00  booked
 
-Select slot numbers (up to 6): 1, 2
+Select slot numbers (up to 10): 1, 2
 ```
 
 If the booking window has not opened, the app schedules the request and adds a
@@ -142,7 +146,7 @@ For a future session the application:
    one connection per preserved or newly selected session.
 6. Cancels and verifies active tennis bookings, polling accepted cancellations
    without resending them while Dooremi's history converges.
-7. Releases up to six independent single-slot requests together at the
+7. Releases up to ten independent single-slot requests together at the
    configured post-boundary delay.
 
 The Mac must be sleeping rather than shut down, the user must remain logged in,

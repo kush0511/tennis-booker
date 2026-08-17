@@ -52,6 +52,19 @@ export type AutomationHeartbeat = {
   cron: string;
 };
 
+export type BookingApiGuard = {
+  status: "unknown" | "healthy" | "disabled";
+  bookingsEnabled: boolean;
+  expectedAppVersion: string;
+  observedAppVersion: string | null;
+  checkedAt: string | null;
+  lastHealthyAt: string | null;
+  disabledAt: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  updatedAt: string;
+};
+
 type ScheduleRow = {
   id: string;
   user_email: string;
@@ -110,7 +123,7 @@ export function ensureSchema(): Promise<void> {
         release_minute INTEGER NOT NULL DEFAULT 0,
         cancellation_lead_seconds INTEGER NOT NULL DEFAULT 15,
         fire_delay_milliseconds INTEGER NOT NULL DEFAULT 10,
-        maximum_sessions INTEGER NOT NULL DEFAULT 6,
+        maximum_sessions INTEGER NOT NULL DEFAULT 10,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )`),
@@ -187,6 +200,20 @@ export function ensureSchema(): Promise<void> {
         last_error_message TEXT,
         refresh_lease_until TEXT,
         login_identifier_kind TEXT,
+        updated_at TEXT NOT NULL
+      )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS booking_api_guard (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'unknown',
+        bookings_enabled INTEGER NOT NULL DEFAULT 0,
+        expected_app_version TEXT NOT NULL,
+        observed_app_version TEXT,
+        checked_at TEXT,
+        last_healthy_at TEXT,
+        disabled_at TEXT,
+        failure_code TEXT,
+        failure_message TEXT,
+        check_lease_until TEXT,
         updated_at TEXT NOT NULL
       )`),
     ])
@@ -343,6 +370,171 @@ export const providerCredentialStore: ProviderCredentialStore = {
   recordFailure: recordProviderCredentialFailure,
   recordValidation: recordProviderCredentialValidation,
 };
+
+type BookingApiGuardRow = {
+  status: "unknown" | "healthy" | "disabled";
+  bookings_enabled: number;
+  expected_app_version: string;
+  observed_app_version: string | null;
+  checked_at: string | null;
+  last_healthy_at: string | null;
+  disabled_at: string | null;
+  failure_code: string | null;
+  failure_message: string | null;
+  updated_at: string;
+};
+
+const BOOKING_API_GUARD_ID = "dooremi";
+
+export async function getBookingApiGuard(): Promise<BookingApiGuard | null> {
+  await ensureSchema();
+  const row = await database()
+    .prepare(`SELECT status, bookings_enabled, expected_app_version,
+      observed_app_version, checked_at, last_healthy_at, disabled_at,
+      failure_code, failure_message, updated_at
+      FROM booking_api_guard WHERE id = ?`)
+    .bind(BOOKING_API_GUARD_ID)
+    .first<BookingApiGuardRow>();
+  return row ? fromBookingApiGuardRow(row) : null;
+}
+
+export async function claimBookingApiGuardCheck(
+  checkedAt: string,
+  leaseUntil: string,
+  expectedAppVersion: string,
+): Promise<boolean> {
+  await ensureSchema();
+  const result = await database()
+    .prepare(`INSERT INTO booking_api_guard (
+      id, status, bookings_enabled, expected_app_version,
+      check_lease_until, updated_at
+    ) VALUES (?, 'unknown', 0, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      expected_app_version = excluded.expected_app_version,
+      check_lease_until = excluded.check_lease_until,
+      updated_at = excluded.updated_at
+    WHERE booking_api_guard.check_lease_until IS NULL
+      OR booking_api_guard.check_lease_until < ?`)
+    .bind(
+      BOOKING_API_GUARD_ID,
+      expectedAppVersion,
+      leaseUntil,
+      checkedAt,
+      checkedAt,
+    )
+    .run();
+  return Number(result.meta.changes || 0) === 1;
+}
+
+export async function recordBookingApiGuardHealthy(input: {
+  checkedAt: string;
+  expectedAppVersion: string;
+  observedAppVersion: string;
+  reenable: boolean;
+}): Promise<BookingApiGuard> {
+  await ensureSchema();
+  await database()
+    .prepare(`INSERT INTO booking_api_guard (
+      id, status, bookings_enabled, expected_app_version,
+      observed_app_version, checked_at, last_healthy_at,
+      disabled_at, failure_code, failure_message, check_lease_until, updated_at
+    ) VALUES (?, 'healthy', 1, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      status = CASE
+        WHEN booking_api_guard.status = 'disabled' AND ? = 0 THEN 'disabled'
+        ELSE 'healthy'
+      END,
+      bookings_enabled = CASE
+        WHEN booking_api_guard.status = 'disabled' AND ? = 0 THEN 0
+        ELSE 1
+      END,
+      expected_app_version = excluded.expected_app_version,
+      observed_app_version = excluded.observed_app_version,
+      checked_at = excluded.checked_at,
+      last_healthy_at = excluded.last_healthy_at,
+      disabled_at = CASE
+        WHEN booking_api_guard.status = 'disabled' AND ? = 0
+          THEN booking_api_guard.disabled_at
+        ELSE NULL
+      END,
+      failure_code = CASE
+        WHEN booking_api_guard.status = 'disabled' AND ? = 0
+          THEN booking_api_guard.failure_code
+        ELSE NULL
+      END,
+      failure_message = CASE
+        WHEN booking_api_guard.status = 'disabled' AND ? = 0
+          THEN booking_api_guard.failure_message
+        ELSE NULL
+      END,
+      check_lease_until = NULL,
+      updated_at = excluded.updated_at`)
+    .bind(
+      BOOKING_API_GUARD_ID,
+      input.expectedAppVersion,
+      input.observedAppVersion,
+      input.checkedAt,
+      input.checkedAt,
+      input.checkedAt,
+      input.reenable ? 1 : 0,
+      input.reenable ? 1 : 0,
+      input.reenable ? 1 : 0,
+      input.reenable ? 1 : 0,
+      input.reenable ? 1 : 0,
+    )
+    .run();
+  const guard = await getBookingApiGuard();
+  if (!guard) throw new Error("Booking API guard state was not saved.");
+  return guard;
+}
+
+export async function recordBookingApiGuardFailure(input: {
+  checkedAt: string;
+  expectedAppVersion: string;
+  observedAppVersion?: string | null;
+  code: string;
+  message: string;
+}): Promise<BookingApiGuard> {
+  await ensureSchema();
+  const code = input.code.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+  const message = input.message
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
+    .slice(0, 320);
+  await database()
+    .prepare(`INSERT INTO booking_api_guard (
+      id, status, bookings_enabled, expected_app_version,
+      observed_app_version, checked_at, disabled_at, failure_code,
+      failure_message, check_lease_until, updated_at
+    ) VALUES (?, 'disabled', 0, ?, ?, ?, ?, ?, ?, NULL, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      status = 'disabled',
+      bookings_enabled = 0,
+      expected_app_version = excluded.expected_app_version,
+      observed_app_version = COALESCE(
+        excluded.observed_app_version,
+        booking_api_guard.observed_app_version
+      ),
+      checked_at = excluded.checked_at,
+      disabled_at = COALESCE(booking_api_guard.disabled_at, excluded.disabled_at),
+      failure_code = excluded.failure_code,
+      failure_message = excluded.failure_message,
+      check_lease_until = NULL,
+      updated_at = excluded.updated_at`)
+    .bind(
+      BOOKING_API_GUARD_ID,
+      input.expectedAppVersion,
+      input.observedAppVersion ?? null,
+      input.checkedAt,
+      input.checkedAt,
+      code,
+      message,
+      input.checkedAt,
+    )
+    .run();
+  const guard = await getBookingApiGuard();
+  if (!guard) throw new Error("Booking API guard failure was not saved.");
+  return guard;
+}
 
 export async function getSettings(userEmail: string): Promise<UserSettings> {
   await ensureSchema();
@@ -774,6 +966,21 @@ function fromProviderCredentialRow(
     lastErrorMessage: row.last_error_message,
     refreshLeaseUntil: row.refresh_lease_until,
     loginIdentifierKind: row.login_identifier_kind,
+    updatedAt: row.updated_at,
+  };
+}
+
+function fromBookingApiGuardRow(row: BookingApiGuardRow): BookingApiGuard {
+  return {
+    status: row.status,
+    bookingsEnabled: row.bookings_enabled === 1,
+    expectedAppVersion: row.expected_app_version,
+    observedAppVersion: row.observed_app_version,
+    checkedAt: row.checked_at,
+    lastHealthyAt: row.last_healthy_at,
+    disabledAt: row.disabled_at,
+    failureCode: row.failure_code,
+    failureMessage: row.failure_message,
     updatedAt: row.updated_at,
   };
 }

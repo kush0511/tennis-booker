@@ -1,5 +1,6 @@
 import {
   data,
+  bookingMutationStatus,
   maintainDooremiSession,
   requireApiUser,
   routeError,
@@ -28,10 +29,11 @@ export async function GET() {
   try {
     const user = await requireApiUser();
     const runtime = getRuntimeEnv();
-    const [settings, heartbeat, session] = await Promise.all([
+    const [settings, heartbeat, session, bookingGuard] = await Promise.all([
       getSettings(user.email),
       getAutomationHeartbeat(),
       maintainDooremiSession(),
+      bookingMutationStatus(),
     ]);
     const checkedAt = new Date();
     const heartbeatAgeSeconds = heartbeat
@@ -55,6 +57,18 @@ export async function GET() {
         lastErrorMessage: session.lastErrorMessage,
         loginIdentifierKind: session.loginIdentifierKind,
         needsAttention: session.needsAttention,
+      },
+      bookingApiGuard: {
+        status: bookingGuard.guard.status,
+        bookingsEnabled: bookingGuard.decision.enabled,
+        expectedAppVersion: bookingGuard.guard.expectedAppVersion,
+        observedAppVersion: bookingGuard.guard.observedAppVersion,
+        checkedAt: bookingGuard.guard.checkedAt,
+        lastHealthyAt: bookingGuard.guard.lastHealthyAt,
+        disabledAt: bookingGuard.guard.disabledAt,
+        failureCode: bookingGuard.guard.failureCode,
+        failureMessage: bookingGuard.guard.failureMessage,
+        message: bookingGuard.decision.message,
       },
       automationEnabled:
         Boolean(runtime.AUTOMATION_SECRET) &&

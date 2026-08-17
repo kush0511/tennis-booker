@@ -92,6 +92,13 @@ artifact without installing its Cron Trigger. The protected
 The protected `POST /api/automation/credential-health` endpoint performs a
 non-booking session check and returns a failing HTTP status when automatic
 renewal needs attention, allowing external monitoring to send an email warning.
+The protected `POST /api/automation/booking-api-health` endpoint also compares
+the current App Store version with the HAR-verified contract and exercises the
+read-only login, history, availability, and preview flow. A new app version,
+failed API, or stale check latches a durable safety lock before any provider
+create or cancellation. Successful scheduled checks do not silently unlock it;
+the owner must validate and re-enable writes from the System view after the
+current HAR-backed contract has been reviewed.
 Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
 connected.
 

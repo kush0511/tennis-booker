@@ -1,6 +1,10 @@
 import { appendScheduleEvent, finishSchedule, type StoredSchedule } from "@/db/repository";
 import { releaseAt, type Config, type Schedule } from "@/lib/domain";
-import { dooremiClient, HttpError } from "./api";
+import {
+  dooremiClient,
+  HttpError,
+  requireBookingMutationsEnabled,
+} from "./api";
 import {
   BookingSubmissionError,
   CancellationError,
@@ -81,6 +85,7 @@ export async function executeImmediate(
   schedule: Schedule,
   config: Config,
 ): Promise<ExecutionResult> {
+  await requireBookingMutationsEnabled();
   const client = await dooremiClient({
     freshWithinMilliseconds: DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS,
     requireManagedRefresh: true,
@@ -88,6 +93,7 @@ export async function executeImmediate(
   const result = await executeBookingTransaction(client, schedule, {
     maxSessions: config.maxSessionsPerBooking,
     warmupPasses: 1,
+    assertMutationsEnabled: requireBookingMutationsEnabled,
   });
   return successfulResult(result);
 }
@@ -96,6 +102,7 @@ export async function executeStoredSchedule(
   stored: StoredSchedule,
   config: Config,
 ): Promise<ExecutionResult> {
+  await requireBookingMutationsEnabled();
   const now = new Date();
   const release = new Date(stored.releaseAt);
   const secondsUntilRelease = (release.valueOf() - now.valueOf()) / 1000;
@@ -184,6 +191,7 @@ export async function executeStoredSchedule(
       ambiguousReconciliationDelaysMilliseconds:
         HOSTED_AMBIGUOUS_RECONCILIATION_DELAYS_MILLISECONDS,
       onTiming: timing,
+      assertMutationsEnabled: requireBookingMutationsEnabled,
     });
     const completed = successfulResult(result);
     await finishSchedule(stored.id, {

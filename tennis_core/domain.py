@@ -117,7 +117,7 @@ def filter_active_tennis_bookings(bookings):
     ]
 
 
-def build_rebooking_batch(schedule, active_bookings, max_sessions=6):
+def build_rebooking_batch(schedule, active_bookings, max_sessions=10):
     targets = []
     for booking in active_bookings:
         for event_time in booking.get("event_times") or []:
