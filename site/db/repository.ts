@@ -1020,6 +1020,7 @@ type SlotMonitorRow = {
 export async function getOrCreateSlotMonitor(
   userEmail: string,
   recipientEmail = userEmail,
+  enabledByDefault = !userEmail.includes("screenshot-service"),
 ): Promise<SlotMonitor> {
   await ensureSchema();
   const now = new Date().toISOString();
@@ -1027,9 +1028,9 @@ export async function getOrCreateSlotMonitor(
     .prepare(`INSERT INTO slot_monitors (
       user_email, enabled, recipient_email, start_minute, end_minute,
       minimum_contiguous_slots, created_at, updated_at
-    ) VALUES (?, 1, ?, 1080, 1440, 2, ?, ?)
+    ) VALUES (?, ?, ?, 1080, 1440, 2, ?, ?)
     ON CONFLICT(user_email) DO NOTHING`)
-    .bind(userEmail, recipientEmail, now, now)
+    .bind(userEmail, enabledByDefault ? 1 : 0, recipientEmail, now, now)
     .run();
   const row = await database()
     .prepare(`SELECT * FROM slot_monitors WHERE user_email = ?`)
@@ -1087,6 +1088,7 @@ export async function listEnabledSlotMonitors(): Promise<SlotMonitor[]> {
   const result = await database()
     .prepare(`SELECT * FROM slot_monitors
       WHERE enabled = 1
+        AND user_email NOT LIKE '%screenshot-service%'
       ORDER BY user_email`)
     .all<SlotMonitorRow>();
   return result.results.map(fromSlotMonitorRow);

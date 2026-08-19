@@ -14,6 +14,7 @@ export type TennisRuntimeEnv = {
   AUTOMATION_SECRET?: string;
   AUTOMATION_TRIGGER_ENABLED?: string;
   GOOGLE_NOTIFICATION_EMAIL?: string;
+  SLOT_MONITOR_OWNER_EMAIL?: string;
   SLOT_MONITOR_SECRET?: string;
 };
 

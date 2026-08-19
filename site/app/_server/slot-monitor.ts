@@ -1,12 +1,14 @@
 import { loadAvailabilityWindow } from "@/app/_server/availability-window";
 import { dooremiClient } from "@/app/_server/api";
 import {
+  getOrCreateSlotMonitor,
   getSettings,
   listEnabledSlotMonitors,
   reconcileSlotMonitorMatches,
   recordSlotMonitorScanFailure,
   type SlotMonitor,
 } from "@/db/repository";
+import { getRuntimeEnv } from "@/db";
 import { safeErrorMessage } from "@/lib/dooremi";
 import {
   rankedSlotGroups,
@@ -22,6 +24,14 @@ export type SlotMonitorRun = {
 
 export async function scanSlotMonitors(baseUrl: string): Promise<SlotMonitorRun> {
   const checkedAt = new Date().toISOString();
+  const runtime = getRuntimeEnv();
+  if (runtime.SLOT_MONITOR_OWNER_EMAIL && runtime.GOOGLE_NOTIFICATION_EMAIL) {
+    await getOrCreateSlotMonitor(
+      runtime.SLOT_MONITOR_OWNER_EMAIL,
+      runtime.GOOGLE_NOTIFICATION_EMAIL,
+      true,
+    );
+  }
   const monitors = await listEnabledSlotMonitors();
   if (!monitors.length) {
     return {
