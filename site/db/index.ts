@@ -13,6 +13,8 @@ export type TennisRuntimeEnv = {
   DOOREMI_CATEGORY_ID?: string;
   AUTOMATION_SECRET?: string;
   AUTOMATION_TRIGGER_ENABLED?: string;
+  GOOGLE_NOTIFICATION_EMAIL?: string;
+  SLOT_MONITOR_SECRET?: string;
 };
 
 export function getRuntimeEnv(): TennisRuntimeEnv {

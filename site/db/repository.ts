@@ -65,6 +65,41 @@ export type BookingApiGuard = {
   updatedAt: string;
 };
 
+export type SlotMonitor = {
+  userEmail: string;
+  enabled: boolean;
+  recipientEmail: string;
+  startMinute: number;
+  endMinute: number;
+  minimumContiguousSlots: number;
+  lastScanAt: string | null;
+  lastError: string | null;
+  lastNotificationAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SlotMonitorMatchInput = {
+  fingerprint: string;
+  eventDay: string;
+  eventTimes: string[];
+  score: number;
+};
+
+export type SlotMonitorNotificationContent = {
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+};
+
+export type SlotNotification = {
+  id: string;
+  recipientEmail: string;
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+};
+
 type ScheduleRow = {
   id: string;
   user_email: string;
@@ -216,6 +251,49 @@ export function ensureSchema(): Promise<void> {
         check_lease_until TEXT,
         updated_at TEXT NOT NULL
       )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS slot_monitors (
+        user_email TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        recipient_email TEXT NOT NULL,
+        start_minute INTEGER NOT NULL DEFAULT 1080,
+        end_minute INTEGER NOT NULL DEFAULT 1440,
+        minimum_contiguous_slots INTEGER NOT NULL DEFAULT 2,
+        last_scan_at TEXT,
+        last_error TEXT,
+        last_notification_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS slot_monitor_matches (
+        user_email TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        event_day TEXT NOT NULL,
+        event_times_json TEXT NOT NULL,
+        score INTEGER NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_alerted_at TEXT,
+        PRIMARY KEY (user_email, fingerprint)
+      )`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS slot_monitor_matches_active_idx
+        ON slot_monitor_matches (user_email, active, event_day)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS slot_notifications (
+        id TEXT PRIMARY KEY,
+        user_email TEXT NOT NULL,
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        text_body TEXT NOT NULL,
+        html_body TEXT NOT NULL,
+        event_day TEXT NOT NULL,
+        event_times_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        lease_until TEXT,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
+      )`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS slot_notifications_delivery_idx
+        ON slot_notifications (status, lease_until, created_at)`),
     ])
     .then(() => undefined)
     .catch((error) => {
@@ -925,6 +1003,299 @@ export async function getAutomationHeartbeat(): Promise<AutomationHeartbeat | nu
     : null;
 }
 
+type SlotMonitorRow = {
+  user_email: string;
+  enabled: number;
+  recipient_email: string;
+  start_minute: number;
+  end_minute: number;
+  minimum_contiguous_slots: number;
+  last_scan_at: string | null;
+  last_error: string | null;
+  last_notification_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getOrCreateSlotMonitor(
+  userEmail: string,
+  recipientEmail = userEmail,
+): Promise<SlotMonitor> {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  await database()
+    .prepare(`INSERT INTO slot_monitors (
+      user_email, enabled, recipient_email, start_minute, end_minute,
+      minimum_contiguous_slots, created_at, updated_at
+    ) VALUES (?, 1, ?, 1080, 1440, 2, ?, ?)
+    ON CONFLICT(user_email) DO NOTHING`)
+    .bind(userEmail, recipientEmail, now, now)
+    .run();
+  const row = await database()
+    .prepare(`SELECT * FROM slot_monitors WHERE user_email = ?`)
+    .bind(userEmail)
+    .first<SlotMonitorRow>();
+  if (!row) throw new Error("Slot monitor settings were not created.");
+  return fromSlotMonitorRow(row);
+}
+
+export async function saveSlotMonitor(
+  userEmail: string,
+  input: Pick<
+    SlotMonitor,
+    | "enabled"
+    | "recipientEmail"
+    | "startMinute"
+    | "endMinute"
+    | "minimumContiguousSlots"
+  >,
+): Promise<SlotMonitor> {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  await database()
+    .prepare(`INSERT INTO slot_monitors (
+      user_email, enabled, recipient_email, start_minute, end_minute,
+      minimum_contiguous_slots, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_email) DO UPDATE SET
+      enabled = excluded.enabled,
+      recipient_email = excluded.recipient_email,
+      start_minute = excluded.start_minute,
+      end_minute = excluded.end_minute,
+      minimum_contiguous_slots = excluded.minimum_contiguous_slots,
+      updated_at = excluded.updated_at`)
+    .bind(
+      userEmail,
+      input.enabled ? 1 : 0,
+      input.recipientEmail,
+      input.startMinute,
+      input.endMinute,
+      input.minimumContiguousSlots,
+      now,
+      now,
+    )
+    .run();
+  await database()
+    .prepare(`UPDATE slot_monitor_matches SET active = 0 WHERE user_email = ?`)
+    .bind(userEmail)
+    .run();
+  return getOrCreateSlotMonitor(userEmail, input.recipientEmail);
+}
+
+export async function listEnabledSlotMonitors(): Promise<SlotMonitor[]> {
+  await ensureSchema();
+  const result = await database()
+    .prepare(`SELECT * FROM slot_monitors
+      WHERE enabled = 1
+      ORDER BY user_email`)
+    .all<SlotMonitorRow>();
+  return result.results.map(fromSlotMonitorRow);
+}
+
+export async function reconcileSlotMonitorMatches(input: {
+  userEmail: string;
+  recipientEmail: string;
+  matches: SlotMonitorMatchInput[];
+  scannedDays: string[];
+  scannedAt: string;
+  error: string | null;
+  notification: SlotMonitorNotificationContent;
+}): Promise<number> {
+  await ensureSchema();
+  const db = database();
+  const current = await db
+    .prepare(`SELECT fingerprint, active
+      FROM slot_monitor_matches WHERE user_email = ?`)
+    .bind(input.userEmail)
+    .all<{ fingerprint: string; active: number }>();
+  const active = new Map(
+    current.results.map((row) => [row.fingerprint, row.active === 1]),
+  );
+  const newlyActive = input.matches.filter(
+    (match) => active.get(match.fingerprint) !== true,
+  );
+  const statements: D1PreparedStatement[] = [];
+
+  if (input.scannedDays.length) {
+    const placeholders = input.scannedDays.map(() => "?").join(", ");
+    statements.push(
+      db
+        .prepare(`UPDATE slot_monitor_matches SET active = 0
+          WHERE user_email = ? AND event_day IN (${placeholders})`)
+        .bind(input.userEmail, ...input.scannedDays),
+    );
+  }
+
+  for (const match of input.matches) {
+    const isNew = active.get(match.fingerprint) !== true;
+    statements.push(
+      db
+        .prepare(`INSERT INTO slot_monitor_matches (
+          user_email, fingerprint, event_day, event_times_json, score,
+          active, first_seen_at, last_seen_at, last_alerted_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT(user_email, fingerprint) DO UPDATE SET
+          event_day = excluded.event_day,
+          event_times_json = excluded.event_times_json,
+          score = excluded.score,
+          active = 1,
+          last_seen_at = excluded.last_seen_at,
+          last_alerted_at = COALESCE(
+            excluded.last_alerted_at,
+            slot_monitor_matches.last_alerted_at
+          )`)
+        .bind(
+          input.userEmail,
+          match.fingerprint,
+          match.eventDay,
+          JSON.stringify(match.eventTimes),
+          match.score,
+          input.scannedAt,
+          input.scannedAt,
+          isNew ? input.scannedAt : null,
+        ),
+    );
+  }
+
+  const firstNewMatch = newlyActive[0];
+  if (firstNewMatch) {
+    statements.push(
+      db
+        .prepare(`INSERT INTO slot_notifications (
+          id, user_email, recipient_email, subject, text_body, html_body,
+          event_day, event_times_json, status, lease_until, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)`)
+        .bind(
+          crypto.randomUUID(),
+          input.userEmail,
+          input.recipientEmail,
+          input.notification.subject,
+          input.notification.textBody,
+          input.notification.htmlBody,
+          firstNewMatch.eventDay,
+          JSON.stringify(firstNewMatch.eventTimes),
+          input.scannedAt,
+        ),
+    );
+  }
+
+  statements.push(
+    db
+      .prepare(`UPDATE slot_monitors SET
+        last_scan_at = ?, last_error = ?, updated_at = ?
+        WHERE user_email = ?`)
+      .bind(
+        input.scannedAt,
+        input.error?.slice(0, 320) ?? null,
+        input.scannedAt,
+        input.userEmail,
+      ),
+  );
+  await db.batch(statements);
+  return newlyActive.length;
+}
+
+export async function recordSlotMonitorScanFailure(
+  userEmail: string,
+  scannedAt: string,
+  error: string,
+): Promise<void> {
+  await ensureSchema();
+  await database()
+    .prepare(`UPDATE slot_monitors SET
+      last_scan_at = ?, last_error = ?, updated_at = ?
+      WHERE user_email = ?`)
+    .bind(scannedAt, error.slice(0, 320), scannedAt, userEmail)
+    .run();
+}
+
+type SlotNotificationRow = {
+  id: string;
+  recipient_email: string;
+  subject: string;
+  text_body: string;
+  html_body: string;
+};
+
+export async function claimSlotNotifications(
+  limit = 10,
+  leaseSeconds = 600,
+): Promise<SlotNotification[]> {
+  await ensureSchema();
+  const db = database();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const leaseUntil = new Date(now.valueOf() + leaseSeconds * 1000).toISOString();
+  const candidates = await db
+    .prepare(`SELECT id, recipient_email, subject, text_body, html_body
+      FROM slot_notifications
+      WHERE status = 'pending'
+        OR (status = 'delivering' AND lease_until < ?)
+      ORDER BY created_at
+      LIMIT ?`)
+    .bind(nowIso, limit)
+    .all<SlotNotificationRow>();
+  const claimed: SlotNotification[] = [];
+  for (const notification of candidates.results) {
+    const result = await db
+      .prepare(`UPDATE slot_notifications SET
+        status = 'delivering', lease_until = ?
+        WHERE id = ? AND (
+          status = 'pending'
+          OR (status = 'delivering' AND lease_until < ?)
+        )`)
+      .bind(leaseUntil, notification.id, nowIso)
+      .run();
+    if (Number(result.meta.changes || 0) !== 1) continue;
+    claimed.push({
+      id: notification.id,
+      recipientEmail: notification.recipient_email,
+      subject: notification.subject,
+      textBody: notification.text_body,
+      htmlBody: notification.html_body,
+    });
+  }
+  return claimed;
+}
+
+export async function acknowledgeSlotNotifications(
+  notificationIds: readonly string[],
+): Promise<number> {
+  await ensureSchema();
+  if (!notificationIds.length) return 0;
+  const db = database();
+  const now = new Date().toISOString();
+  let acknowledged = 0;
+  const userEmails = new Set<string>();
+  for (const id of notificationIds) {
+    const row = await db
+      .prepare(`SELECT user_email FROM slot_notifications WHERE id = ?`)
+      .bind(id)
+      .first<{ user_email: string }>();
+    const result = await db
+      .prepare(`UPDATE slot_notifications SET
+        status = 'delivered', lease_until = NULL, delivered_at = ?
+        WHERE id = ? AND status = 'delivering'`)
+      .bind(now, id)
+      .run();
+    if (Number(result.meta.changes || 0) !== 1) continue;
+    acknowledged += 1;
+    if (row?.user_email) userEmails.add(row.user_email);
+  }
+  if (userEmails.size) {
+    await db.batch(
+      [...userEmails].map((userEmail) =>
+        db
+          .prepare(`UPDATE slot_monitors SET
+            last_notification_at = ?, updated_at = ?
+            WHERE user_email = ?`)
+          .bind(now, now, userEmail),
+      ),
+    );
+  }
+  return acknowledged;
+}
+
 function fromScheduleRow(row: ScheduleRow): StoredSchedule {
   return {
     id: row.id,
@@ -981,6 +1352,22 @@ function fromBookingApiGuardRow(row: BookingApiGuardRow): BookingApiGuard {
     disabledAt: row.disabled_at,
     failureCode: row.failure_code,
     failureMessage: row.failure_message,
+    updatedAt: row.updated_at,
+  };
+}
+
+function fromSlotMonitorRow(row: SlotMonitorRow): SlotMonitor {
+  return {
+    userEmail: row.user_email,
+    enabled: row.enabled === 1,
+    recipientEmail: row.recipient_email,
+    startMinute: row.start_minute,
+    endMinute: row.end_minute,
+    minimumContiguousSlots: row.minimum_contiguous_slots,
+    lastScanAt: row.last_scan_at,
+    lastError: row.last_error,
+    lastNotificationAt: row.last_notification_at,
+    createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }

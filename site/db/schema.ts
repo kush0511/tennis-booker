@@ -147,3 +147,67 @@ export const bookingApiGuard = sqliteTable("booking_api_guard", {
   checkLeaseUntil: text("check_lease_until"),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const slotMonitors = sqliteTable("slot_monitors", {
+  userEmail: text("user_email").primaryKey(),
+  enabled: integer("enabled").notNull().default(1),
+  recipientEmail: text("recipient_email").notNull(),
+  startMinute: integer("start_minute").notNull().default(1080),
+  endMinute: integer("end_minute").notNull().default(1440),
+  minimumContiguousSlots: integer("minimum_contiguous_slots")
+    .notNull()
+    .default(2),
+  lastScanAt: text("last_scan_at"),
+  lastError: text("last_error"),
+  lastNotificationAt: text("last_notification_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const slotMonitorMatches = sqliteTable(
+  "slot_monitor_matches",
+  {
+    userEmail: text("user_email").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    eventDay: text("event_day").notNull(),
+    eventTimesJson: text("event_times_json").notNull(),
+    score: integer("score").notNull(),
+    active: integer("active").notNull().default(1),
+    firstSeenAt: text("first_seen_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    lastAlertedAt: text("last_alerted_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userEmail, table.fingerprint] }),
+    index("slot_monitor_matches_active_idx").on(
+      table.userEmail,
+      table.active,
+      table.eventDay,
+    ),
+  ],
+);
+
+export const slotNotifications = sqliteTable(
+  "slot_notifications",
+  {
+    id: text("id").primaryKey(),
+    userEmail: text("user_email").notNull(),
+    recipientEmail: text("recipient_email").notNull(),
+    subject: text("subject").notNull(),
+    textBody: text("text_body").notNull(),
+    htmlBody: text("html_body").notNull(),
+    eventDay: text("event_day").notNull(),
+    eventTimesJson: text("event_times_json").notNull(),
+    status: text("status").notNull().default("pending"),
+    leaseUntil: text("lease_until"),
+    createdAt: text("created_at").notNull(),
+    deliveredAt: text("delivered_at"),
+  },
+  (table) => [
+    index("slot_notifications_delivery_idx").on(
+      table.status,
+      table.leaseUntil,
+      table.createdAt,
+    ),
+  ],
+);

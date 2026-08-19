@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { suggestedSessionDay } from "../lib/domain.js";
+import { AvailabilityExplorer } from "./availability-explorer.js";
+import { BookedSlots } from "./booked-slots.js";
 import type {
   ScheduleEvent,
   StoredSchedule,
@@ -165,6 +167,7 @@ export function TennisDashboard({
     new Map<string, { data: Availability; fetchedAt: number }>(),
   );
   const availabilityRequest = useRef(0);
+  const deepLinkHandled = useRef(false);
 
   const dates = useMemo(
     () =>
@@ -209,6 +212,33 @@ export function TennisDashboard({
     0,
     settings.maximumSessions - reservedTimes.size,
   );
+  const activeSelectedTimes = selectedTimes.filter(
+    (eventTime) => !reservedTimes.has(eventTime),
+  );
+
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    deepLinkHandled.current = true;
+    const parameters = new URLSearchParams(window.location.search);
+    const day = parameters.get("day");
+    const times = (parameters.get("times") || "")
+      .split(",")
+      .filter((value) => /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(value));
+    if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day) || !times.length) return;
+    const timer = window.setTimeout(() => {
+      setSelectedDay(day);
+      setSelectedTimes([...new Set(times)].slice(0, settings.maximumSessions));
+      window.history.replaceState({}, "", window.location.pathname);
+      window.setTimeout(
+        () =>
+          document
+            .getElementById("book-day-detail")
+            ?.scrollIntoView({ behavior: "smooth" }),
+        250,
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [settings.maximumSessions]);
 
   useEffect(() => {
     let clockTimer: number | null = null;
@@ -277,7 +307,8 @@ export function TennisDashboard({
 
   const loadSchedules = useCallback(async () => {
     try {
-      setSchedules(await api<StoredSchedule[]>("/api/schedules"));
+      const result = await api<StoredSchedule[]>("/api/schedules");
+      setSchedules(result);
     } catch (caught) {
       setError(messageOf(caught));
     }
@@ -328,22 +359,58 @@ export function TennisDashboard({
       if (current.includes(slot.eventTime)) {
         return current.filter((value) => value !== slot.eventTime);
       }
-      if (current.length >= maximumSelectable) {
+      const active = current.filter((value) => !reservedTimes.has(value));
+      if (active.length >= maximumSelectable) {
         setError(`Choose at most ${maximumSelectable} sessions.`);
-        return current;
+        return active;
       }
       setError(null);
-      return [...current, slot.eventTime];
+      return [...active, slot.eventTime];
     });
   }
 
   function submitSelection() {
-    if (!selectedTimes.length) return;
+    if (!activeSelectedTimes.length) return;
     setPendingAction({
       kind: releaseOpen ? "book" : "schedule",
       eventDay: selectedDay,
-      eventTimes: selectedTimes,
+      eventTimes: activeSelectedTimes,
     });
+  }
+
+  function chooseExplorerSelection(eventDay: string, eventTimes: string[]) {
+    const occupied = new Set([
+      ...bookings
+        .filter((booking) => booking.eventDay === eventDay)
+        .flatMap((booking) =>
+          booking.eventTimes.length ? booking.eventTimes : [booking.eventTime],
+        ),
+      ...schedules
+        .filter(
+          (schedule) =>
+            schedule.eventDay === eventDay &&
+            ["pending", "running"].includes(schedule.status),
+        )
+        .flatMap((schedule) => schedule.eventTimes),
+    ]);
+    const selectable = [...new Set(eventTimes)]
+      .filter((eventTime) => !occupied.has(eventTime))
+      .slice(0, Math.max(0, settings.maximumSessions - occupied.size));
+    if (!selectable.length) {
+      setError("Those sessions are already booked or included in a release plan.");
+      return;
+    }
+    setTab("book");
+    setSelectedDay(eventDay);
+    setSelectedTimes(selectable);
+    setNotice(
+      `${selectable.length} session${selectable.length === 1 ? "" : "s"} ready to review below.`,
+    );
+    setError(null);
+    window.setTimeout(
+      () => document.getElementById("book-day-detail")?.scrollIntoView({ behavior: "smooth" }),
+      80,
+    );
   }
 
   async function bookSelection(eventDay: string, eventTimes: string[]) {
@@ -599,7 +666,7 @@ export function TennisDashboard({
               type="button"
               onClick={() => setTab("book")}
             >
-              Book
+              Open slots
             </button>
             <button
               className={tab === "plans" ? "is-active" : ""}
@@ -753,11 +820,23 @@ export function TennisDashboard({
             </div>
           ) : null}
 
-          <section className="date-section" aria-labelledby="date-label">
+          <AvailabilityExplorer
+            tokenConfigured={tokenConfigured}
+            maximumSessions={settings.maximumSessions}
+            onChoose={chooseExplorerSelection}
+            onError={setError}
+            onNotice={setNotice}
+          />
+
+          <section
+            className="date-section"
+            id="book-day-detail"
+            aria-labelledby="date-label"
+          >
             <div className="section-heading-row">
               <div>
-                <p className="section-kicker">Step 1</p>
-                <h2 id="date-label">Choose a court day</h2>
+                <p className="section-kicker">Book a day</p>
+                <h2 id="date-label">Review live availability</h2>
               </div>
               <span>Singapore time</span>
             </div>
@@ -846,7 +925,7 @@ export function TennisDashboard({
                     <div className="slot-skeleton" key={index} aria-hidden="true" />
                   ))
                 : availability?.slots.map((slot) => {
-                    const selected = selectedTimes.includes(slot.eventTime);
+                    const selected = activeSelectedTimes.includes(slot.eventTime);
                     const reserved = reservedTimes.has(slot.eventTime);
                     return (
                       <button
@@ -884,24 +963,24 @@ export function TennisDashboard({
             </div>
           </section>
 
-          <div className={`selection-dock ${selectedTimes.length ? "is-visible" : ""}`}>
+          <div className={`selection-dock ${activeSelectedTimes.length ? "is-visible" : ""}`}>
             <div>
-              <span>{selectedTimes.length} selected</span>
-              <strong>{selectedTimes.join(" · ") || "Choose a session"}</strong>
+              <span>{activeSelectedTimes.length} selected</span>
+              <strong>{activeSelectedTimes.join(" · ") || "Choose a session"}</strong>
             </div>
             <button
               className="primary-button"
               type="button"
               onClick={submitSelection}
-              disabled={!selectedTimes.length || submitting || !bookingReady}
+              disabled={!activeSelectedTimes.length || submitting || !bookingReady}
             >
               {submitting
                 ? "Working…"
                 : releaseOpen
-                  ? `Book ${selectedTimes.length || ""} now`
+                  ? `Book ${activeSelectedTimes.length || ""} now`
                   : automationReady
-                    ? `Arm ${selectedTimes.length || ""} release`
-                    : `Save ${selectedTimes.length || ""} plan`}
+                    ? `Arm ${activeSelectedTimes.length || ""} release`
+                    : `Save ${activeSelectedTimes.length || ""} plan`}
             </button>
           </div>
         </section>
@@ -1060,37 +1139,15 @@ export function TennisDashboard({
             </button>
           </div>
           <div className="history-list">
-            {bookings.map((booking) => (
-              <article className="booking-row" key={booking.id}>
-                <div className="booking-date">
-                  <strong>{historyDayNumber(booking.eventDay)}</strong>
-                  <span>{historyMonth(booking.eventDay)}</span>
-                </div>
-                <div className="booking-copy">
-                  <strong>{booking.facilityName}</strong>
-                  <span>{booking.eventTime}</span>
-                  <small>{booking.statusName}</small>
-                </div>
-                {booking.canCancel ? (
-                  <button
-                    type="button"
-                    className="danger-link"
-                    onClick={() =>
-                      setPendingAction({ kind: "cancel-booking", booking })
-                    }
-                    disabled={submitting || !bookingReady}
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-              </article>
-            ))}
-            {!bookings.length && !loadingBookings ? (
-              <div className="empty-plans compact">
-                <strong>No bookings returned</strong>
-                <p>Confirmed Dooremi bookings will appear here.</p>
-              </div>
-            ) : null}
+            <BookedSlots
+              bookings={bookings}
+              loading={loadingBookings}
+              canMutate={bookingReady}
+              submitting={submitting}
+              onCancel={(booking) =>
+                setPendingAction({ kind: "cancel-booking", booking })
+              }
+            />
           </div>
         </section>
 
@@ -1217,7 +1274,7 @@ export function TennisDashboard({
       </div>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
-        <NavButton label="Book" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
+        <NavButton label="Open" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
         <NavButton label="Plans" active={tab === "plans"} onClick={() => setTab("plans")} symbol="◷" count={activePlans.length} />
         <NavButton label="My bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
         <NavButton label="System" active={tab === "system"} onClick={() => setTab("system")} symbol="◎" />
@@ -1759,20 +1816,4 @@ function formatHeartbeatAge(seconds: number | null): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3_600)}h`;
-}
-
-function historyDayNumber(value: string): string {
-  const match = value.match(/(?:,\s)?(\d{2})\/(\d{2})\/(\d{4})/);
-  if (match) return match[1];
-  const iso = value.match(/^\d{4}-\d{2}-(\d{2})$/);
-  return iso?.[1] || "—";
-}
-
-function historyMonth(value: string): string {
-  const match = value.match(/(?:,\s)?(\d{2})\/(\d{2})\/(\d{4})/);
-  const month = match?.[2] || value.match(/^\d{4}-(\d{2})-\d{2}$/)?.[1];
-  if (!month) return "";
-  return new Intl.DateTimeFormat("en-SG", { month: "short" }).format(
-    new Date(Date.UTC(2026, Number(month) - 1, 1)),
-  );
 }
