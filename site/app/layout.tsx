@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import { headers } from "next/headers";
-import "./ui-overhaul.css";
+import "./globals.css";
 
 const manrope = Manrope({
   variable: "--font-body",
