@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   bookingHistorySections,
+  bookingPresentationSections,
   rankedSlotGroups,
   timeSlotGroups,
   type AvailabilityWindowDay,
@@ -112,4 +113,35 @@ test("booking history is chronological for upcoming sessions and newest-first fo
   const sections = bookingHistorySections(bookings, "2026-08-20");
   assert.deepEqual(sections.upcoming.map((booking) => booking.id), [2, 3]);
   assert.deepEqual(sections.previous.map((booking) => booking.id), [1]);
+});
+
+test("cancelled records are removed from the default booking itinerary", () => {
+  const bookings = [
+    {
+      id: 1,
+      eventDay: "2026-08-23",
+      eventTime: "18:00-19:00",
+      eventTimes: ["18:00-19:00"],
+      statusName: "Confirmed",
+    },
+    {
+      id: 2,
+      eventDay: "2026-08-24",
+      eventTime: "19:00-20:00",
+      eventTimes: ["19:00-20:00"],
+      statusName: "Cancelled",
+    },
+    {
+      id: 3,
+      eventDay: "2026-08-21",
+      eventTime: "07:00-08:00",
+      eventTimes: ["07:00-08:00"],
+      statusName: "Canceled by provider",
+    },
+  ];
+
+  const sections = bookingPresentationSections(bookings, "2026-08-22");
+  assert.deepEqual(sections.upcoming.map((booking) => booking.id), [1]);
+  assert.deepEqual(sections.previous.map((booking) => booking.id), []);
+  assert.deepEqual(sections.cancelled.map((booking) => booking.id), [2, 3]);
 });

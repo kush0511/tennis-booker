@@ -66,6 +66,11 @@ export type BookingHistorySections<T extends BookingLike> = {
   previous: T[];
 };
 
+export type BookingPresentationSections<T extends BookingLike> =
+  BookingHistorySections<T> & {
+    cancelled: T[];
+  };
+
 export function singaporeDay(instant = Date.now()): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Singapore",
@@ -243,6 +248,25 @@ export function bookingHistorySections<T extends BookingLike>(
   upcoming.sort(compareBookingsAscending);
   previous.sort((left, right) => compareBookingsAscending(right, left));
   return { upcoming, previous };
+}
+
+export function bookingPresentationSections<
+  T extends BookingLike & { statusName: string },
+>(
+  bookings: readonly T[],
+  today = singaporeDay(),
+): BookingPresentationSections<T> {
+  const cancelled = bookings
+    .filter((booking) => isCancelledBooking(booking.statusName))
+    .sort((left, right) => compareBookingsAscending(right, left));
+  const visible = bookings.filter(
+    (booking) => !isCancelledBooking(booking.statusName),
+  );
+  return { ...bookingHistorySections(visible, today), cancelled };
+}
+
+export function isCancelledBooking(statusName: string): boolean {
+  return statusName.trim().toLowerCase().includes("cancel");
 }
 
 export function bookingDay(value: string): string {

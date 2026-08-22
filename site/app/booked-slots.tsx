@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import {
   bookingDay,
-  bookingHistorySections,
+  bookingPresentationSections,
   sessionDays,
   singaporeDay,
 } from "../lib/slot-discovery.js";
@@ -33,7 +33,7 @@ export function BookedSlots({
 }) {
   const today = singaporeDay();
   const sections = useMemo(
-    () => bookingHistorySections(bookings, today),
+    () => bookingPresentationSections(bookings, today),
     [bookings, today],
   );
   const activeUpcoming = sections.upcoming.filter(
@@ -133,7 +133,7 @@ export function BookedSlots({
       {sections.previous.length ? (
         <details className="previous-bookings">
           <summary>
-            <span>Previous bookings</span>
+            <span>Past bookings</span>
             <strong>{sections.previous.length}</strong>
           </summary>
           <div className="itinerary-list">
@@ -149,6 +149,31 @@ export function BookedSlots({
           </div>
         </details>
       ) : null}
+
+      {sections.cancelled.length ? (
+        <details className="previous-bookings cancelled-bookings">
+          <summary>
+            <span>Cancelled records</span>
+            <strong>{sections.cancelled.length}</strong>
+          </summary>
+          <p className="archive-note">
+            Hidden from your main itinerary so only usable court time stays in
+            focus.
+          </p>
+          <div className="itinerary-list">
+            {sections.cancelled.slice(0, 12).map((booking) => (
+              <BookingItineraryRow
+                booking={booking}
+                key={booking.id}
+                canMutate={false}
+                submitting={submitting}
+                onCancel={onCancel}
+                muted
+              />
+            ))}
+          </div>
+        </details>
+      ) : null}
     </>
   );
 }
@@ -158,16 +183,18 @@ function BookingItineraryRow({
   canMutate,
   submitting,
   onCancel,
+  muted = false,
 }: {
   booking: BookingDisplayRecord;
   canMutate: boolean;
   submitting: boolean;
   onCancel: (booking: BookingDisplayRecord) => void;
+  muted?: boolean;
 }) {
   const day = calendarDay(bookingDay(booking.eventDay));
   const times = bookingTimes(booking);
   return (
-    <article className="itinerary-row">
+    <article className={`itinerary-row ${muted ? "is-muted" : ""}`}>
       <time dateTime={bookingDay(booking.eventDay)}>
         <span>{day.weekday}</span>
         <strong>{day.day}</strong>

@@ -666,7 +666,7 @@ export function TennisDashboard({
               type="button"
               onClick={() => setTab("book")}
             >
-              Open slots
+              Book a court
             </button>
             <button
               className={tab === "plans" ? "is-active" : ""}
@@ -1274,9 +1274,9 @@ export function TennisDashboard({
       </div>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
-        <NavButton label="Open" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
+        <NavButton label="Book" active={tab === "book"} onClick={() => setTab("book")} symbol="＋" />
         <NavButton label="Plans" active={tab === "plans"} onClick={() => setTab("plans")} symbol="◷" count={activePlans.length} />
-        <NavButton label="My bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
+        <NavButton label="Bookings" active={tab === "history"} onClick={() => setTab("history")} symbol="≡" />
         <NavButton label="System" active={tab === "system"} onClick={() => setTab("system")} symbol="◎" />
       </nav>
 

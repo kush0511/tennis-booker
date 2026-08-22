@@ -282,30 +282,36 @@ export function AvailabilityExplorer({
           )}
         </div>
 
-        <aside className="monitor-card" aria-labelledby="monitor-heading">
-          <div className="monitor-title-row">
+        <details className="monitor-card">
+          <summary className="monitor-title-row">
             <div>
               <span className="monitor-signal" aria-hidden="true" />
-              <p className="section-kicker">Google mail watch</p>
-              <h3 id="monitor-heading">Tell me when a good slot opens</h3>
+              <p className="section-kicker">Slot alerts</p>
+              <h3>Watch for a better opening</h3>
             </div>
-            {monitorState ? (
-              <label className="monitor-toggle">
-                <input
-                  type="checkbox"
-                  checked={monitorState.monitor.enabled}
-                  onChange={(event) =>
-                    updateMonitor({ enabled: event.target.checked })
-                  }
-                />
-                <span>{monitorState.monitor.enabled ? "On" : "Off"}</span>
-              </label>
-            ) : null}
-          </div>
-          {loadingMonitor || !monitorState ? (
-            <div className="monitor-loading">Loading your alert filter…</div>
-          ) : (
-            <>
+            <span className="monitor-summary-status">
+              {loadingMonitor || !monitorState
+                ? "Loading"
+                : monitorState.monitor.enabled
+                  ? "On"
+                  : "Off"}
+            </span>
+          </summary>
+          <div className="monitor-body">
+            {loadingMonitor || !monitorState ? (
+              <div className="monitor-loading">Loading your alert filter…</div>
+            ) : (
+              <>
+                <label className="monitor-toggle">
+                  <span>Email me when matches appear</span>
+                  <input
+                    type="checkbox"
+                    checked={monitorState.monitor.enabled}
+                    onChange={(event) =>
+                      updateMonitor({ enabled: event.target.checked })
+                    }
+                  />
+                </label>
               <div className="monitor-filter-grid">
                 <label>
                   <span>From</span>
@@ -385,9 +391,10 @@ export function AvailabilityExplorer({
               {monitorState.monitor.lastError ? (
                 <p className="monitor-error">{monitorState.monitor.lastError}</p>
               ) : null}
-            </>
-          )}
-        </aside>
+              </>
+            )}
+          </div>
+        </details>
       </div>
     </section>
   );
