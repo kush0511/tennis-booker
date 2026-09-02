@@ -20,6 +20,36 @@ export const BOOKING_API_GUARD_CHECK_LEASE_MILLISECONDS = 60_000;
 
 const PROVIDER_BOOKING_LIMIT_PATTERN =
   /you have reached the booking limit according to house rules/i;
+const TRANSIENT_BACKGROUND_LOGIN_PATTERN =
+  /dooremi is temporarily unavailable during background sign-in/i;
+const RECOVERABLE_GUARD_FAILURE_CODES = new Set([
+  "api",
+  "authentication",
+  "connectivity",
+  "timeout",
+  "rate_limit",
+  "app_version_lookup_failed",
+  "preview_inconclusive",
+]);
+
+const KNOWN_GUARD_FAILURE_CODES = new Set([
+  ...RECOVERABLE_GUARD_FAILURE_CODES,
+  "app_version_changed",
+  "client_upgrade_required",
+  "rejected",
+  "ambiguous_submission",
+  "facility_not_configured",
+  "category_not_configured",
+  "compatibility_check_failed",
+]);
+
+export function compatibilityFailureCode(error: unknown): string {
+  if (!error || typeof error !== "object") return "compatibility_check_failed";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && KNOWN_GUARD_FAILURE_CODES.has(code)
+    ? code
+    : "compatibility_check_failed";
+}
 
 export function isCompatiblePreviewBusinessRejection(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -35,7 +65,11 @@ export function canAutomationRecoverBookingGuard(
   guard: Pick<BookingApiGuardState, "failureCode" | "failureMessage"> | null,
 ): boolean {
   return (
-    guard?.failureCode === "app_version_lookup_failed" ||
+    (typeof guard?.failureCode === "string" &&
+      RECOVERABLE_GUARD_FAILURE_CODES.has(guard.failureCode)) ||
+    (guard?.failureCode === "compatibility_check_failed" &&
+      typeof guard.failureMessage === "string" &&
+      TRANSIENT_BACKGROUND_LOGIN_PATTERN.test(guard.failureMessage)) ||
     isCompatiblePreviewBusinessRejection({
       code: guard?.failureCode,
       message: guard?.failureMessage,

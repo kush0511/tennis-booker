@@ -102,7 +102,10 @@ current HAR-backed contract has been reviewed. A transient Apple metadata
 transport failure can recover only after every provider read/preview check also
 passes. The provider's exact account-level booking-limit response counts as a
 compatible read-only preview response; unknown preview rejections still freeze
-writes.
+writes. Temporary login, network, timeout, rate-limit, and provider-availability
+failures also recover only after a later complete compatibility check succeeds;
+app-version drift, current-client rejections, and unfamiliar contract failures
+remain latched for HAR review.
 Set `AUTOMATION_TRIGGER_ENABLED=true` only while a verified external runner is
 connected.
 

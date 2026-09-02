@@ -5,6 +5,7 @@ import {
   BOOKING_API_GUARD_MAX_AGE_MILLISECONDS,
   bookingGuardDecision,
   canAutomationRecoverBookingGuard,
+  compatibilityFailureCode,
   isCompatiblePreviewBusinessRejection,
   parseDooremiAppVersion,
   parseDooremiAppVersionFromPage,
@@ -92,6 +93,43 @@ test("the known provider booking-limit rejection proves preview compatibility", 
     isCompatiblePreviewBusinessRejection({
       code: "rejected",
       message: "The booking endpoint returned an unfamiliar rule.",
+    }),
+    false,
+  );
+});
+
+test("transient provider failures recover only after a complete later check", () => {
+  assert.equal(compatibilityFailureCode({ code: "api" }), "api");
+  assert.equal(
+    compatibilityFailureCode({ code: "invented_contract_failure" }),
+    "compatibility_check_failed",
+  );
+  assert.equal(
+    canAutomationRecoverBookingGuard({
+      failureCode: "api",
+      failureMessage: "Dooremi is temporarily unavailable.",
+    }),
+    true,
+  );
+  assert.equal(
+    canAutomationRecoverBookingGuard({
+      failureCode: "compatibility_check_failed",
+      failureMessage:
+        "Dooremi is temporarily unavailable during background sign-in.",
+    }),
+    true,
+  );
+  assert.equal(
+    canAutomationRecoverBookingGuard({
+      failureCode: "client_upgrade_required",
+      failureMessage: "Please update to the latest version.",
+    }),
+    false,
+  );
+  assert.equal(
+    canAutomationRecoverBookingGuard({
+      failureCode: "app_version_changed",
+      failureMessage: "Capture a current HAR.",
     }),
     false,
   );

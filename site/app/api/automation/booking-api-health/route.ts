@@ -25,10 +25,11 @@ export async function POST(request: Request) {
 
     const previous = await getBookingApiGuard();
     const guard = await runBookingApiCompatibilityCheck({
-      // A temporary Apple metadata transport failure is not evidence that the
-      // Dooremi contract changed. It may recover only after the complete
-      // provider read/preview check succeeds. Actual provider/app drift stays
-      // latched until the owner validates the updated HAR-backed contract.
+      // Temporary Apple/provider transport, authentication, or availability
+      // failures are not contract drift. They may recover only after this
+      // complete provider login/history/availability/preview check succeeds.
+      // Version drift and unfamiliar create/contract rejections stay latched
+      // until the owner validates an updated HAR-backed contract.
       reenableOnSuccess: canAutomationRecoverBookingGuard(previous),
     });
     const decision = bookingGuardDecision(guard);

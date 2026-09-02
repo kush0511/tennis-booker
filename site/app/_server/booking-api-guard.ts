@@ -11,13 +11,14 @@ import {
   appStoreLookupUrl,
   appStorePageUrl,
   BOOKING_API_GUARD_CHECK_LEASE_MILLISECONDS,
+  compatibilityFailureCode,
+  isCompatiblePreviewBusinessRejection,
   parseDooremiAppVersion,
   parseDooremiAppVersionFromPage,
-  isCompatiblePreviewBusinessRejection,
   VERIFIED_DOOREMI_APP_VERSION,
 } from "@/lib/booking-guard";
 import { suggestedSessionDay } from "@/lib/domain";
-import { DooremiError, safeErrorMessage } from "@/lib/dooremi";
+import { safeErrorMessage } from "@/lib/dooremi";
 import { DOOREMI_PREBOOKING_FRESHNESS_MILLISECONDS } from "@/lib/dooremi-session";
 import { dooremiClient } from "./api";
 
@@ -62,12 +63,6 @@ async function currentDooremiAppVersion(
     );
   }
   return parseDooremiAppVersionFromPage(await page.text());
-}
-
-function failureCode(error: unknown): string {
-  if (error instanceof CompatibilityCheckError) return error.code;
-  if (error instanceof DooremiError) return error.code;
-  return "compatibility_check_failed";
 }
 
 export async function runBookingApiCompatibilityCheck(options: {
@@ -173,7 +168,10 @@ export async function runBookingApiCompatibilityCheck(options: {
       checkedAt,
       expectedAppVersion: VERIFIED_DOOREMI_APP_VERSION,
       observedAppVersion,
-      code: failureCode(error),
+      // Workers can bundle the provider client more than once, which makes an
+      // instanceof check unreliable across module copies. Preserve only the
+      // small allowlist of structural provider/guard codes instead.
+      code: compatibilityFailureCode(error),
       message:
         safeErrorMessage(error) ||
         "The booking API compatibility check failed. No booking or cancellation is allowed.",

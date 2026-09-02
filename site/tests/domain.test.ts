@@ -30,6 +30,12 @@ test("TypeScript defaults match the canonical cross-runtime contract", () => {
   assert.equal(DOOREMI_BASE_URL, sharedContract.api.baseUrl);
   assert.equal(DOOREMI_IOS_USER_AGENT, sharedContract.api.userAgent);
   assert.deepEqual(DOOREMI_ENDPOINTS, sharedContract.api.endpoints);
+  assert.equal(sharedContract.api.bookingContractRevision, 3);
+  assert.equal(sharedContract.api.harVerifiedAt, "2026-09-02T02:49:11Z");
+  assert.equal(
+    sharedContract.api.bookingContractFingerprint,
+    "Dooremi/14|orderPreviewV2|createOrderV3|eventDay,bookingOrderFacilityList",
+  );
   assert.equal(defaultConfig.bookingLeadDays, sharedContract.defaults.bookingLeadDays);
   assert.equal(defaultConfig.releaseHour, sharedContract.defaults.releaseHour);
   assert.equal(defaultConfig.releaseMinute, sharedContract.defaults.releaseMinute);
